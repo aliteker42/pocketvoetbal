@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     alias(libs.plugins.android.application)
     // BuildConfig.SENTRY_DSN_ANDROID: the CI secret, else the ignored .local/reliability.properties.
@@ -280,7 +282,7 @@ val downloadFootballModel =
                 file(local).copyTo(target, overwrite = true)
                 return@doLast
             }
-            java.net.URL(footballModelUrl).openStream().use { input ->
+            URI(footballModelUrl).toURL().openStream().use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
             }
             require(target.length() > 1_000_000) { "football model download looks truncated: ${target.length()} bytes" }
