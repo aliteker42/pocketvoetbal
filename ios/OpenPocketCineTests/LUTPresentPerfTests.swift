@@ -1,0 +1,118 @@
+import CoreImage
+import CoreVideo
+import Metal
+import OpenCineApple
+import OpenPocketViewCore
+import XCTest
+import OpenCineMedia
+
+@testable import OpenPocketCine
+
+/// Tight loop for "LUT on a 720p proxy should be cheap." Times the real baker
+/// graph, not a stub. Numbers are logged; the assertions catch regressions that
+/// would make a 3D cube feel like a 4K grade.
+final class LUTPresentPerfTests: XCTestCase {
+    func testWorkingRasterCapsFourKBeforeTheCube() {
+        XCTAssertEqual(FeedPresentPolicy.maxWorkingWidth, 1440)
+        XCTAssertEqual(
+            FeedWorkingRaster.targetSize(width: 1280, height: 720).width, 1280,
+            "720p proxy must not be rescaled")
+        XCTAssertEqual(FeedWorkingRaster.targetSize(width: 3840, height: 2160).width, 1440)
+        XCTAssertEqual(FeedWorkingRaster.targetSize(width: 1920, height: 1080).width, 1440)
+    }
+
+    /// The 4K regression the old 80 ms bake budget caught, asserted on the graph itself: the cube
+    /// product a 4K source hands the baker is already capped at the working width. A wall-clock
+    /// budget measured the machine's load instead (a loaded simulator took 582 ms).
+    func testFourKLUTProductReachesTheBakerAtTheWorkingWidth() {
+        let cube = BuiltInLook.mono.cube()
+        var fx = MonitorFrameEffects()
+        fx.lutDimension = cube.size
+        fx.lutRGBA = cube.rgbaComponents.withUnsafeBytes { Data($0) }
+        let buffer = ScopeTestBuffers.makeFlatBuffer(code: 78, width: 3840, height: 2160)
+        let source = CIImage(cvPixelBuffer: buffer, options: MonitorWorkingSpace.imageOptions)
+        let product = LiveMonitorCompositor.applyProduct(
+            to: source, effects: fx, display: CIImage(cvPixelBuffer: buffer))
+        XCTAssertTrue(product.unmanagedBake, "An armed cube is the baked product")
+        XCTAssertEqual(product.image.extent.width, 1440)
+        XCTAssertEqual(product.image.extent.height, 810)
+    }
+
+    func testLUTBakeOf720pProxyIsCheapRelativeToFourK() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal required")
+        }
+        let cube = BuiltInLook.mono.cube()
+        var fx = MonitorFrameEffects()
+        fx.lutDimension = cube.size
+        fx.lutRGBA = cube.rgbaComponents.withUnsafeBytes { Data($0) }
+
+        let baker = MonitorFrameBaker(device: device)
+        let drawable = CGSize(width: 1920, height: 1080)
+        // First GPU compiles the cube pipeline — discard that hitch.
+        _ = measureBake(
+            baker: baker, drawable: drawable, width: 1280, height: 720, effects: fx, frames: 2,
+            skip: 2)
+        let proxy = measureBake(
+            baker: baker, drawable: drawable, width: 1280, height: 720, effects: fx, frames: 6,
+            skip: 0)
+        let fourK = measureBake(
+            baker: baker, drawable: drawable, width: 3840, height: 2160, effects: fx, frames: 4,
+            skip: 0)
+        let identity = measureBake(
+            baker: baker, drawable: drawable, width: 1280, height: 720,
+            effects: MonitorFrameEffects(), frames: 4, skip: 0)
+
+        print(
+            "LUT present ms proxy=\(String(format: "%.2f", proxy)) 4K=\(String(format: "%.2f", fourK)) identity=\(String(format: "%.2f", identity))"
+        )
+        // Size tests pin the 1440 cap. These timings are the physical SLO
+        // (docs/PERFORMANCE.md), not a CI tripwire: a GitHub macOS runner renders
+        // Metal in software and swung 68 ms to 107 ms on the same 4K bake as the
+        // number of concurrent jobs changed. Numbers are logged on CI; the
+        // assertions hold on a developer Mac (`just native-check`).
+        try XCTSkipIf(
+            ProcessInfo.processInfo.environment["CI"] != nil,
+            "timing asserted on real hardware only")
+        // The 4K cap is asserted deterministically above; only the proxy frame budget is timed.
+        // That budget is the physical SLO and stays sensitive to simulator load by nature.
+        XCTAssertLessThan(
+            proxy, 16,
+            "720p LUT bake+GPU must stay inside one 60 Hz frame after warmup (was \(proxy) ms)")
+    }
+
+    private func measureBake(
+        baker: MonitorFrameBaker, drawable: CGSize, width: Int, height: Int,
+        effects: MonitorFrameEffects, frames: Int, skip: Int
+    ) -> Double {
+        let buffer = ScopeTestBuffers.makeFlatBuffer(code: 78, width: width, height: height)
+        let source = CIImage(cvPixelBuffer: buffer, options: MonitorWorkingSpace.imageOptions)
+        let display = CIImage(cvPixelBuffer: buffer)
+        var total: Double = 0
+        var counted = 0
+        for i in 0..<(frames + skip) {
+            let image =
+                effects.lutDimension >= 2
+                ? LiveMonitorCompositor.applyProduct(to: source, effects: effects, display: display)
+                    .image
+                : display
+            let done = expectation(description: "bake \(width)x\(height) #\(i)")
+            let start = CFAbsoluteTimeGetCurrent()
+            baker.scheduleBake(
+                image: image, drawableSize: drawable, pixelFormat: .bgra8Unorm, unmanaged: false
+            ) {
+                if i >= skip {
+                    total += CFAbsoluteTimeGetCurrent() - start
+                    counted += 1
+                }
+                done.fulfill()
+            }
+            // Ends on the bake's completion; the bound only stops a broken bake from hanging.
+            wait(for: [done], timeout: 30)
+            if let texture = baker.bakedTexture(for: drawable, pixelFormat: .bgra8Unorm) {
+                baker.releaseBakedTexture(texture)
+            }
+        }
+        return counted == 0 ? 0 : total / Double(counted) * 1000
+    }
+}

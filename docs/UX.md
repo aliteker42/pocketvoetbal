@@ -1,0 +1,186 @@
+# Operator UX
+
+OpenPocketCine is a field monitor for DPs, camera operators, and content
+creators. Glanceable on a dark set, one-handed, reliable. It is not a consumer
+camera gallery.
+
+Operator-visible layout and metrics live in [`PARITY.md`](PARITY.md). This file
+is voice, first-run, help, and failure copy.
+
+## Voice
+
+Write for the operator, not the stack. Name the camera action. Keep it short.
+
+Operator-facing strings never name sister apps or other camera brands
+(OpenZCine, Nikon). `OperatorFacingCopyTests` enforces that on iOS; Android copy
+follows the same list. Control toasts name the camera action (`Can't change
+color while recording — D-Log2 can't zoom`), not opcodes.
+
+Every assist that has a long-press sheet includes help for the control the
+operator is holding (units, scale, sensitivity). Empty and error states say what
+to do next.
+
+## FTUE
+
+First pair uses the shared OpenCine `PairScreen` on both platforms:
+
+1. **FIRST RUN** — “Pair your camera.” Copy promises about a minute.
+2. BLE scan: select a row, then Continue.
+3. Approve on the Pocket if asked.
+4. Join camera Wi-Fi (OS prompt — do not hide it). On 5.8 GHz the camera AP
+   can take about a minute to appear; both shells keep trying (#235).
+5. Datalink → live picture.
+
+Empty store: the wizard fills the viewport. After a successful pair, the camera
+is saved; next launch is **Your cameras**. **Pair new camera** re-enters the
+wizard. The saved row being connected shows discovery/joining progress and
+**Cancel**; camera names stay above availability and connection actions. Other
+connection actions wait until the attempt finishes or is cancelled. On iOS,
+**Watch a feed** is the eye button next to the Multiview grid button in the
+camera-list header. Settings does not start a new pair. The wizard always shows
+**Report a problem** below the pairing target so a stuck first pair can open the
+native report form. **Share Diagnostics** remains in the overflow menu.
+
+Long-press a saved connection setup that moves the camera (Wi-Fi or hotspot) to
+**Forget** it; setups have no rename, as on main. **Privacy** and **Terms** live
+in Settings; the startup pages carry no legal links, as on main.
+
+Pocket and Nano are separate bodies. If Bluetooth reached a different camera
+than the one tapped, say so and tell the operator to pick the matching row.
+
+Simulator cannot exercise BLE or camera Wi-Fi. Wizard and reconnect changes are
+**physical**.
+
+## Failure and reconnect
+
+Session recovery holds the last frame. A black well is a teardown or present-path
+bug, not “Waiting for live view” copy over a live socket. Teardown rules:
+[`live-session.md`](live-session.md). Stall policy: [`feed-watchdog.md`](feed-watchdog.md).
+
+Recovery remains visible until a new source picture reaches the presentation
+path. A handshake or repaint of the held image cannot dismiss it. The card names
+the current step: looking for the saved camera, reconnecting, rejoining Wi-Fi,
+restoring the connection, or waiting for a new picture. Retry connection and
+Operator menu stay available. Automatic full-session recovery stops after at
+most eight attempts or three minutes total, including radio waits and backoff.
+The earlier feed-watchdog ladder has its own finite stages. A terminal state
+does not keep showing an activity spinner.
+
+Returning to the app validates the retained camera network. If the route changed
+or the picture does not return, recovery runs the saved-camera connection spine
+again. Brief scene changes with a healthy picture preserve the session. Movement
+controls wait for the first picture and stop when the scene becomes inactive or
+recovery takes ownership.
+
+Renaming camera Wi-Fi updates the BLE name. Reconnect must join that live
+name, not the previous SoftAP SSID still sitting in Keychain / Keystore
+(#257). Deleting the saved row is not required.
+
+Local VPNs and ad blockers can join camera Wi-Fi and still drop the live
+UDP feed. Join Wi-Fi tells the operator to pause them or exclude this app
+(`LocalVPNFilter.joinWifiPhoneStep`). After 8 s with no picture and a
+tunnel still up, the waiting well uses `LocalVPNFilter.liveHint`. Do not
+name AdGuard / Blokada / sister camera apps in chrome — the handbook FAQ
+does.
+
+Record confirmation is a bottom action sheet. It applies to starting and stopping
+recording; **Photo** uses a shutter button and fires immediately without that
+sheet. A pending recording confirmation is dismissed when shooting mode,
+recording state, connection, or interface lock changes.
+Low-Light / SuperNight is a video mode and retains recording controls.
+Apple Watch rec / shutter skips the sheet (the phone may be in a cage), same as
+gamepad Cross/A.
+
+Watch placeholders: **Open OpenPocketCine on iPhone** only when there is
+no snapshot yet (not on wrist-down). **No camera connected** overlays even
+a retained picture after an explicit disconnect; stale frame timecode is cleared.
+**Waiting for live view** appears before the first picture. Always On keeps
+rec / timecode / last frame on the dimmed face. Third-party apps cannot
+match Flashlight brightness or disable the idle backlight.
+`WKExtension.isFrontmostTimeoutExtended` is unsupported since watchOS 7.
+Wake duration is **Settings → Display & Brightness → Wake Duration → 70
+Seconds** on the watch (15 s default). After that the system Always On
+dim applies; the companion does not extra-fade the picture.
+
+Link health in the top bar is delivery (FPS chip), not RSSI.
+
+Movable scopes and the LIGHTS / ND panels use direct touch-drag. Their corner
+grips resize directly too. Scopes may sit partly under top and bottom readout /
+assist bars and underneath the entire joystick/zoom/gimbal-controls cluster in
+portrait or landscape. The cluster remains above scopes, and its visibility does
+not change their placement boundary. The iOS Head Lock compass (above the joystick cluster on the right)
+also draws above scopes without restricting where they can move. Focus reset and audio meters do not fence
+off a whole side of the screen.
+Reserve the record/media/settings rail and portrait system button row with
+8 pt/dp padding. The resize target extends only 12 pt/dp below the panel so it
+can reach closer to the bottom edge. Use the visible panel body for horizontal
+limits so left and right margins are equal. The visible corner fits within the
+padding; its expanded touch area may extend beyond the side boundary. Fit and
+clamp the body and vertical resize extent when dragging, resizing, restoring saved
+positions, or changing orientation. Saved
+scale remains the preferred size; a small screen can temporarily fit it smaller.
+Toolbar long presses retain options access. Motion Control's editor keeps its
+separate hold-to-move interaction.
+
+## Help surfaces
+
+- Long-press View Assist → options + help.
+- Operator Setup: seven tabs (Link, Sharing, View Assist, Controls, Display,
+  Storage, System). Display **HDR display** (off by default) uses the phone
+  panel so live view and scopes stay readable in sun — not camera COLOR HDR.
+  iOS Sharing: Share this feed, optional passcode, control
+  requests, broadcast priority, and an explicit Show Wi-Fi code sheet. Watch a
+  feed from home prompts joining the same camera Wi-Fi first: scan the host code
+  with Camera, accept Join Network, then return and select the shared feed. Only
+  the host opens a camera session. Discovery and streaming never use peer-to-peer. Android Sharing stays
+  Coming soon. The watcher monitor keeps local assists/scopes, telemetry and REC
+  tally around the picture. Request/Release control stays on the monitor; camera
+  controls appear only with the host grant. Interrupted feeds hold the last frame,
+  show bounded reconnect progress, and retain Leave / Choose a feed after failure.
+- TestFlight / Play What to Test is this-build operator copy (`docs/tester-notes.md`).
+- Connection setup (first pair): **Report a problem** stays visible at every
+  step, including scanning, missing permissions and failures. Closing the form
+  returns to pairing without cancelling the attempt. The overflow menu retains
+  **Share Diagnostics** for local export.
+- Operator Setup → System → **Report a problem** opens a native Sentry form
+  for a description, optional reply email, optional reviewed technical details and
+  up to three selected photos/screenshots. Show previews and removal before Send.
+  Automatic error reports are a separate optional toggle; manual submission does not turn that toggle on.
+  **Diagnostic options** is a separate chevron disclosure card for save/export
+  and local deletion. Public GitHub reporting and feature-request choices are absent from this operator flow.
+  iOS screenshot for TestFlight still copies a compact paste (`docs/diagnostics.md`).
+
+## When this pointer fires
+
+First-run, wizard, saved-camera list, operator-facing strings, assist help,
+empty/error states, or reconnect copy. Run `OperatorFacingCopyTests` when iOS
+strings change. Prove wizard and reconnect **physical**.
+
+The first configured launch asks once whether to enable automatic error reports.
+Enable and Not now are explicit choices; neither is preselected. Declining leaves
+manual reporting and all camera features available. The System toggle permits
+a later change. An update asks if no reporting choice was previously saved;
+existing Enable and Not now decisions are respected.
+
+Multiview begins each session with Wi-Fi or this phone's hotspot. Its setup
+wizard groups the current network, app-saved networks and nearby networks found
+by a camera. Opening Wi-Fi starts a bounded camera scan; manual entry and saved
+networks remain usable while it runs. Passwords have their own screen with a
+show/hide control and network compatibility guidance. Connect waits for scan
+cleanup, joins and confirms the phone's network, then opens the empty stage.
+Failed joins stay on the password screen for correction or retry. Assigned
+cameras lock the session network until removed. Saved credentials never bypass
+confirmation. On iOS, Add setup and Multiview render the same
+`StationNetworkSetupView`; Android's matching form is `StationNetworkSetup`.
+Hotspot instructions use each OS's Settings; its password stays private to the
+OS until the operator enters it, and interface detection is only a hint.
+
+Network picker headings reserve the same height during scanning and after Scan
+again appears. In landscape, network summaries and password fields start on the
+same row. Connect sits at the bottom of the available safe area, above the
+keyboard; form content scrolls independently. Manual network entry stays
+reachable when Nearby contains a long list.
+
+Navigation tabs use one highlighted edge line with no individual boxes. Scroll
+content uses soft opacity masks at edges with overflow, revealing the original
+surface behind it. Settings no longer paints a different-colored MORE overlay.

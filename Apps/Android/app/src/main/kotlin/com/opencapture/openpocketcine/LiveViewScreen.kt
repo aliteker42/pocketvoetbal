@@ -1,0 +1,152 @@
+package com.opencapture.openpocketcine
+
+import com.opencapture.opencine.appkitnative.MonitorLiveFeedDisplay
+import com.opencapture.opencine.appkitnative.MonitorLiveFeedOwners
+import com.opencapture.opencine.appkitnative.MonitorLiveFeedHost
+import com.opencapture.opencine.appkitnative.MonitorLiveFeedSource
+import com.opencapture.opencine.appkitnative.MonitorFaceReadbackEpoch
+import com.opencapture.opencine.core.ConnectionState
+import com.opencapture.opencine.dji.PocketCameraSession
+import com.opencapture.openpocketcine.feed.LiveFeed
+
+
+import com.opencapture.opencine.cameracontrols.*
+
+import com.opencapture.opencine.appkit.FollowCameraGallery
+import com.opencapture.opencine.appkit.MonitorInputBlock
+
+import com.opencapture.opencine.appkit.LocalOperatorHaptics
+import com.opencapture.opencine.platform.LocalVPNProbe
+import android.graphics.Bitmap
+import android.view.Surface
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import com.opencapture.opencine.vocabulary.CameraCommands
+import com.opencapture.openpocketcine.feed.rememberLiveFeedEffectsPlan
+import com.opencapture.openpocketcine.session.LiveFaceDetector
+import kotlinx.coroutines.isActive
+
+/** The actual live adapter; native fixtures exercise its frame factories and discard owner. */
+internal fun monitorLiveFeedSource(
+    sessionOwner: () -> PocketCameraSession,
+    football: com.opencapture.openpocketcine.football.FootballTracker? = null,
+    frameWanted: kotlinx.coroutines.flow.StateFlow<Boolean>? = null,
+): MonitorLiveFeedSource<LiveFaceDetector.Frame> =
+    object : MonitorLiveFeedSource<LiveFaceDetector.Frame> {
+        private val session get() = sessionOwner()
+        private val footballActive get() = football?.active?.value == true
+        override val decoder get() = session.decoder
+        override val pictureIdentity: Any get() = session.connectedCamera ?: session
+        override val faceReadbackEpoch: MonitorFaceReadbackEpoch?
+            get() {
+                if (session.phaseFlow.value != com.opencapture.opencine.vocabulary.ConnectionPhase.LIVE ||
+                    session.connectedCamera == null) return null
+                val current = session.control.current
+                if (current.connection != ConnectionState.Ready) return null
+                return MonitorFaceReadbackEpoch(current.session, current.epoch)
+            }
+        override val cameraName get() = session.connectedCamera?.name
+        override val connection get() = session.phaseFlow.value
+        override val recoveryState get() = session.recoveryState
+        override val isFeedRecovering get() = session.isFeedRecovering
+        override val isFocusResetAvailable get() = session.isFocusResetAvailable
+        override val wantsFaceDetect get() = frameWanted ?: session.wantsFaceDetect
+        override fun attachSurface(surface: Surface?) = session.attachSurface(surface)
+        override fun noteLiveFrame() = session.noteLiveFrame()
+        override fun retrySessionRecovery() = session.retrySessionRecovery()
+        override fun wantsFaceFrame() = if (footballActive) football!!.wantsFrame() else session.wantsFaceFrame()
+        override fun faceFrame(bitmap: Bitmap) = LiveFaceDetector.Frame.of(bitmap)
+        override fun discardUnsubmittedFaceFrame(frame: LiveFaceDetector.Frame, bitmap: Bitmap) = frame.release()
+        override fun faceFrame(nv21: ByteArray, width: Int, height: Int) = LiveFaceDetector.Frame.nv21(nv21, width, height)
+        override fun considerFaceFrame(frame: LiveFaceDetector.Frame) {
+            // Voetbal-modus: het beeld gaat naar de spelersdetector, niet naar Face AF. De detector
+            // kopieert de pixels meteen, dus het frame kan direct vrij.
+            if (footballActive) {
+                val tracker = football!!
+                frame.nv21?.let { tracker.considerNv21(it, frame.width, frame.height) }
+                    ?: frame.bitmap?.let { tracker.considerBitmap(it) }
+                frame.release()
+                return
+            }
+            session.considerFaceFrame(frame)
+        }
+    }
+
+@Composable
+fun LiveViewScreen(model: AppModel) {
+    val cover = model.shellState.cover
+    val status by model.session.chromeStatus.collectAsState()
+    val capabilities = model.monitorLayout()
+    val cameraGalleryOpen by model.session.cameraGalleryOpen.collectAsState()
+    FollowCameraGallery(cameraGalleryOpen, model.shell)
+    val controlNote by model.session.controlNote.collectAsState()
+    val controlBusy by model.session.controlBusy.collectAsState()
+    val focusPoint by model.session.focusPoint.collectAsState()
+    val trackingHud by model.session.trackingHud.collectAsState()
+    val aeLock by model.session.aeLock.collectAsState()
+    val poseViewFlip by model.session.gimbalPoseViewFlip.collectAsState()
+    val poseInvertPan by model.session.gimbalPoseInvertPan.collectAsState()
+    val gimbalLimitPulse by model.session.gimbalLimitPulse.collectAsState()
+    val operatorHaptics = LocalOperatorHaptics.current
+    val liveState = remember(model) { MonitorOperatorLiveState() }
+    val context = LocalContext.current
+    val assist = model.assist
+    LaunchedEffect(gimbalLimitPulse) {
+        if (gimbalLimitPulse == 0) return@LaunchedEffect
+        model.gimbalGamepad.pulseLimit(model, operatorHaptics)
+    }
+    val session = model.session
+    val source = remember(session) { monitorLiveFeedSource({ session }, model.football, model.liveFrameWanted) }
+    val plan = rememberLiveFeedEffectsPlan(assist = assist, lutSelection = model.lutSelection, status = status,
+        family = session.connectedCamera?.model?.family.orEmpty(), cameraName = session.connectedCamera?.name)
+    MonitorLiveFeedHost(LiveFeed, source,
+        owners = MonitorLiveFeedOwners(assist, model.scopeBus, model.inspectorPreview),
+        display = MonitorLiveFeedDisplay(plan, CameraCommands.liveViewFlip(poseViewFlip, assist.mirrorsHorizontally),
+            model::chromeSectionMounts, model.portraitFeedAspect, model.virtualJoystickSize, model.hdrDisplayActive),
+        cover = cover,
+        onOperatorMenu = { model.disconnect() },
+        // The camera holds its overlay chrome while a cover hides the live picture.
+        onCover = { session.setOperatorOverlayHeld(it != null) }) {
+        // Current scene observations, precision and operator actions remain app-owned.
+        val flipV = assist.flipsVertically
+        val focusOffCenter = session.isFocusResetAvailable
+        val metering: MonitorOperatorMeteringTile? = null
+        val chrome = rememberOperatorChromeSource(model, status, capabilities)
+        val focus = MonitorOperatorFocusObservation(focusPoint, trackingHud, session.supportsTapFocus,
+            aeLock != null, model.focusBoxLocked, focusOffCenter)
+        val focusActions = MonitorOperatorFocusActions(
+            { x, y -> session.handleFeedTap(x, y); Unit },
+            { box -> session.startTracking(box); Unit }, session::lockAutoExposure,
+            { session.canLockAutoExposure }, { session.unlockAutoExposure() },
+            { model.focusBoxLocked = !model.focusBoxLocked; model.focusBoxLocked },
+            model::resetFocusPoint, { session.cancelSubjectTracking() }, session::presentControlNote)
+        androidx.compose.foundation.layout.Box(modifier) {
+        MonitorOperatorLiveSurface(chrome,
+            geometry, liveState,
+            cameraStatusLiveSource(chrome, geometry, liveState, link.label, link.bars, hasPicture, verticalPicture,
+                mirrored = mirrored, recovering = recovering, busy = controlBusy, note = controlNote,
+                clearNote = session::clearControlNoteIf, readExposure = { status.meteredEv },
+                exposureAvailable = !recovering && !session.isFeedRecovering,
+                level = session.levelReading,
+                levelViewFlip = CameraCommands.liveInvertPan(poseInvertPan, assist.mirrorsHorizontally) != flipV,
+                vpnActive = { LocalVPNProbe.isActive(context) }, metering = metering),
+            rememberOperatorAssistSource(model, status), focus, focusActions, nativeInputBlocked = { reason ->
+                model.gimbalGamepad.noteBlocked(model)
+                model.endGimbalStick()
+                if (reason == MonitorInputBlock.LOCK) session.cancelProgrammedMove()
+            }, modifier = Modifier.fillMaxSize(), picture = {
+                picture()
+                // Voetbal-modus: herkenning over het beeld, in dezelfde 0..1-ruimte als het beeld zelf.
+                com.opencapture.openpocketcine.football.FootballOverlay(model.football, mirrored)
+            })
+        com.opencapture.openpocketcine.football.FootballControls(
+            model.football, Modifier.align(androidx.compose.ui.Alignment.TopCenter))
+        }
+    }
+}

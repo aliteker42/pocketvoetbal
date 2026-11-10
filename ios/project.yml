@@ -1,0 +1,290 @@
+name: OpenPocketCine
+options:
+  bundleIdPrefix: com.opencapture
+  deploymentTarget:
+    iOS: "17.0"
+    watchOS: "10.0"
+  createIntermediateGroups: true
+  # Xcode Cloud disables SPM auto-resolution; copy ios/Package.resolved into
+  # the generated (gitignored) workspace after every xcodegen run.
+  postGenCommand: sh sync-package-resolved.sh
+
+packages:
+  OpenPocketViewCore:
+    path: ..
+  # The OpenCine platform package (shared UI MonitorUI/MonitorPresentation, OpenCineCore and its
+  # optional products, OpenCineDJI, OpenCineMulticam): a sibling checkout of OpenCine next to this
+  # repository, pinned in opencine-pins.txt. One package identity: Package.swift's ../OpenCine is
+  # the same directory. Listed here because Xcode links a re-exported package product only into
+  # targets that name it. Swap to the published URL + exact version when it has a remote.
+  OpenCine:
+    path: ../../OpenCine
+  # OpenCine's optional reporting adapter (sentry-cocoa), its own package in the same checkout.
+  OpenCineSentryApple:
+    path: ../../OpenCine/Packages/OpenCineSentryApple
+
+targets:
+  OpenPocketCine:
+    type: application
+    platform: iOS
+    sources:
+      - OpenPocketCine
+    postBuildScripts:
+      - name: Stamp source revision
+        script: bash "${SRCROOT}/../../OpenCine/scripts/sentry/stamp-source-revision.sh"
+        # Ordered after Info.plist processing, which otherwise may rerun after it and drop the stamp.
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
+        basedOnDependencyAnalysis: false
+      - name: Stage legal files
+        # The repository's NOTICE, LICENSE and THIRD-PARTY-NOTICES.md, copied into the bundle at
+        # build time (OpenCine scripts/stage-legal-resources.py), so the Licenses and NOTICE pages
+        # are those files and no copy is checked in.
+        script: python3 "${SRCROOT}/../../OpenCine/scripts/stage-legal-resources.py" --app "${SRCROOT}/.." "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Legal"
+        basedOnDependencyAnalysis: false
+    dependencies:
+      - package: OpenPocketViewCore
+        product: OpenPocketViewCore
+      - package: OpenCine
+        product: OpenCineMedia
+      - package: OpenCine
+        product: OpenCineMotion
+      - package: OpenCine
+        product: OpenCineRelay
+      - package: OpenCine
+        product: OpenCineRelayApple
+      - package: OpenCine
+        product: OpenCineWatch
+      - package: OpenCine
+        product: MonitorUI
+      - package: OpenCine
+        product: MonitorPresentation
+      - package: OpenCine
+        product: OpenCineCore
+      # Optional Frame.io delivery (OpenCine plan OPTIONAL-01). Pocket keeps the callback
+      # scheme, client ID and its keychain, destination and history namespaces (MediaDelivery.swift);
+      # the account, sign-in and uploads are OpenCineFrameIOApple's.
+      - package: OpenCine
+        product: OpenCineFrameIO
+      - package: OpenCine
+        product: OpenCineFrameIOApple
+      # Apple media runtime (OpenCine plan MEDIA-02): the VideoToolbox decoder runtime under
+      # HevcDecoder and decoded-frame leases. iOS app only; the watch never decodes live video.
+      - package: OpenCine
+        product: OpenCineApple
+      - package: OpenCine
+        product: OpenCineCameraVocabulary
+      - package: OpenCine
+        product: OpenCineAppKitApple
+      - package: OpenCine
+        product: OpenCineCameraControls
+      - package: OpenCine
+        product: OpenCineDJI
+      - package: OpenCine
+        product: OpenCineDJIApple
+      - package: OpenCine
+        product: OpenCineMulticam
+      # The shared app shell (SHELL-02): saved-camera store, cameras model and the cameras and
+      # pair screens over the DJI integration.
+      - package: OpenCine
+        product: OpenCineAppKit
+      # The shared reporting adapter: the app shell's reporting sink on the Sentry SDK
+      # (sentry-cocoa comes with it, at the version OpenCine pins).
+      - package: OpenCineSentryApple
+        product: OpenCineSentryApple
+      - target: OpenPocketCineWatch
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        # The app shell (CoreBluetooth / Network / Hotspot glue) uses the Swift 5 language mode to
+        # keep the prototype moving; the core package stays Swift 6 strict-concurrency and fully tested.
+        # ponytail: tighten to Swift 6 once the I/O layer is validated on hardware.
+        SWIFT_VERSION: "5.0"
+        # Internal device builds need symbols just as distributed builds do.
+        DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+        # Same App ID as Android and the App Store Connect record. Enable Hotspot
+        # Configuration on this identifier in the Developer portal.
+        PRODUCT_BUNDLE_IDENTIFIER: com.opencapture.openpocketcine
+        PRODUCT_NAME: OpenPocketCine
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # Do not put XML comments in the entitlements plist. ProcessProductPackaging
+        # rewrites it in place (strips comments, retabs) and the build then fails with
+        # "Entitlements file was modified during the build".
+        CODE_SIGN_ENTITLEMENTS: OpenPocketCine/OpenPocketCine.entitlements
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) CI_SILENCE_GL_DEPRECATION=1"
+        OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -DCI_SILENCE_GL_DEPRECATION"
+        # Same team as OpenZCine — it already has the Hotspot Configuration capability.
+        DEVELOPMENT_TEAM: "4V4EGQ6LZA"
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: OpenPocketCine
+        INFOPLIST_KEY_CFBundleName: OpenPocketCine
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        INFOPLIST_KEY_GCSupportsControllerUserInteraction: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+        INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleLightContent
+        INFOPLIST_KEY_UIStatusBarHidden: YES
+        # YES so SwiftUI `.statusBarHidden` can hide the iPad system bar after launch.
+        # `UIStatusBarHidden~ipad` lives in Info-Frameio.plist — INFOPLIST_KEY cannot
+        # spell a `~ipad` variant.
+        INFOPLIST_KEY_UIViewControllerBasedStatusBarAppearance: YES
+        # Space-separated — a colon list becomes one invalid string and iOS stays portrait-only.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_CADisableMinimumFrameDurationOnPhone: YES
+        # Native iPad resizing lets UIKit report window-control exclusions.
+        # Do not request UIRequiresFullScreen compatibility scaling: it keeps a
+        # fixed scene size underneath the system window buttons on iPadOS 26.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: "OpenPocketCine uses Bluetooth to find and pair with your DJI Osmo Pocket and hand off Wi-Fi."
+        # OpenCineApple links AVFoundation external USB capture support.
+        INFOPLIST_KEY_NSCameraUsageDescription: "If you use an external USB capture device on iPad, OpenPocketCine needs camera access to receive its video."
+        INFOPLIST_KEY_NSMotionUsageDescription: "OpenPocketCine uses headphone motion so AirPods can aim the gimbal."
+        # iOS names the current Wi-Fi only to apps with precise location (Add setup › Wi-Fi).
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "OpenPocketCine uses your location only so iOS can tell it which Wi-Fi this iPhone is on, to offer that network when you add a camera's Wi-Fi setup. Your location is not stored or shared."
+        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking: YES
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "OpenPocketCine connects to cameras over local Wi-Fi to receive video and control them, and can share the live picture with nearby OpenPocketCine phones."
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "OpenPocketCine saves clips you choose to Photos."
+        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking: YES
+        INFOPLIST_FILE: OpenPocketCine/Info-Frameio.plist
+    configFiles:
+      Debug: OpenPocketCine/Frameio.xcconfig
+      Release: OpenPocketCine/Frameio.xcconfig
+
+  OpenPocketCineTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - OpenPocketCineTests
+      - ../../OpenCine/Tests/MonitorUITests/MonitorPortraitHeaderClearanceTests.swift
+    dependencies:
+      # The shared hosted-test wait; dependency-free, so no second copy of a host module.
+      - package: OpenCine
+        product: OpenCineHostedTestSupport
+      # The shared manual clock (HostClock seams); depends on OpenCineCore only.
+      - package: OpenCine
+        product: OpenCineCoreTestSupport
+      # OpenCineAppKit comes from the host app: linking it here too would make it a framework
+      # with a second MonitorUI (a second theme accent) inside.
+      - target: OpenPocketCine
+      # Test support only: the shared hosted accessibility walk, which depends on nothing here.
+      - package: OpenCine
+        product: OpenCineHostedAccessibility
+      - package: OpenPocketViewCore
+        product: OpenPocketViewCore
+      - package: OpenCine
+        product: OpenCineCore
+      - package: OpenCine
+        product: OpenCineMedia
+      - package: OpenCine
+        product: OpenCineFrameIO
+      - package: OpenCine
+        product: OpenCineMotion
+      - package: OpenCine
+        product: OpenCineRelay
+      - package: OpenCine
+        product: OpenCineRelayApple
+      - package: OpenCine
+        product: OpenCineApple
+      - package: OpenCine
+        product: OpenCineCameraVocabulary
+      - package: OpenCine
+        product: OpenCineDJI
+      - package: OpenCine
+        product: OpenCineDJIApple
+      - package: OpenCine
+        product: OpenCineMulticam
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.opencapture.openpocketcine.tests
+        DEVELOPMENT_TEAM: "4V4EGQ6LZA"
+        CODE_SIGN_STYLE: Automatic
+        BUNDLE_LOADER: $(TEST_HOST)
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/OpenPocketCine.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OpenPocketCine
+
+  OpenPocketCineWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - OpenPocketCineWatch
+    dependencies:
+      - package: OpenPocketViewCore
+        product: OpenPocketViewCore
+      # The wrist monitor and its WatchConnectivity client (OpenCineWatch).
+      - package: OpenCine
+        product: OpenCineWatch
+    configFiles:
+      Debug: OpenPocketCineWatch/Watch.xcconfig
+      Release: OpenPocketCineWatch/Watch.xcconfig
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        PRODUCT_BUNDLE_IDENTIFIER: com.opencapture.openpocketcine.watch
+        PRODUCT_NAME: OpenPocketCineWatch
+        TARGETED_DEVICE_FAMILY: "4"
+        DEVELOPMENT_TEAM: "4V4EGQ6LZA"
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: OpenPocketCineWatch/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SDKROOT: watchos
+        WATCHOS_DEPLOYMENT_TARGET: "10.0"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+
+  OpenPocketCineUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - OpenPocketCineUITests
+    dependencies:
+      - target: OpenPocketCine
+      # The UI tests every app shares (OpenCine OpenCineAppUITesting), the review contract
+      # (MonitorPresentation) and the layout capabilities its conformance profile names (OpenCineCore).
+      - package: OpenCine
+        product: OpenCineAppUITesting
+      - package: OpenCine
+        product: MonitorPresentation
+      - package: OpenCine
+        product: OpenCineCore
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        # Declares the conformance profile before any test runs (ConformanceApp.swift).
+        INFOPLIST_KEY_NSPrincipalClass: $(PRODUCT_MODULE_NAME).ConformanceApp
+        PRODUCT_BUNDLE_IDENTIFIER: com.opencapture.openpocketcine.uitests
+        TEST_TARGET_NAME: OpenPocketCine
+        DEVELOPMENT_TEAM: "4V4EGQ6LZA"
+        CODE_SIGN_STYLE: Automatic
+
+schemes:
+  OpenPocketCine:
+    build:
+      targets:
+        OpenPocketCine: all
+        OpenPocketCineWatch: all
+        OpenPocketCineTests: [test]
+    test:
+      targets:
+        - OpenPocketCineTests
+  OpenPocketCineWatch:
+    build:
+      targets:
+        OpenPocketCineWatch: all
+  OpenPocketCineUIReview:
+    build:
+      targets:
+        OpenPocketCine: all
+        OpenPocketCineUITests: [test]
+    test:
+      targets:
+        - OpenPocketCineUITests

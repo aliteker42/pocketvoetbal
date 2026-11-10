@@ -1,0 +1,20 @@
+{
+  "Exclude": [
+    "LICENSE",
+    ".local/",
+    ".claude/skills/",
+    ".claude/worktrees/",
+    ".worktrees/",
+    "docs/flows/",
+    "docs/design/",
+    "ios/",
+    "Sources/",
+    "Tests/",
+    "tools/",
+    "build/",
+    ".build/",
+    "Apps/Android/build/",
+    "Apps/Android/app/build/",
+    "Apps/Android/core-api/build/"
+  ]
+}

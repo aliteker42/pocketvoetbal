@@ -1,0 +1,190 @@
+# Android — sharing Swift the OpenZCine way
+
+OpenPocketCine’s Android app lives in this repository (`Apps/Android/`,
+`Sources/OpenPocketCineAndroidFacade/`). Closed testing is the TestFlight analog:
+signed AAB from GitHub Actions onto Play, waitlist on
+[opencapture.org/openpocketcine](https://opencapture.org/openpocketcine/). iOS is the daily driver. Setup:
+[`docs/android-play-ci.md`](docs/android-play-ci.md).
+
+Business logic stays in **`OpenPocketViewCore`** (UI-free, I/O-free Foundation).
+Android follows the public [OpenZCine](https://github.com/erik-sutton95/OpenZCine)
+pattern rather than Skip/SKIE/an xcframework.
+
+Operator-visible behavior lives in [`docs/PARITY.md`](docs/PARITY.md). Live UDP
+and decoder invariants live in [`docs/live-session.md`](docs/live-session.md).
+This file is the Android build and I/O notes that implement those rows.
+
+## How the Android build is structured
+
+Source: the public [OpenZCine](https://github.com/erik-sutton95/OpenZCine) repository.
+
+1. **Portable Swift core** — `Sources/OpenPocketViewCore/` never imports SwiftUI, UIKit, or Android.
+2. **Android JNI facade:** `Sources/OpenPocketCineAndroidFacade/` holds this app's hand-written `@_cdecl` JNI shims (`SwiftCoreJNI.swift`): LUT packing, feed effects and core version, exported as `Java_com_opencapture_openpocketcine_bridge_SwiftCore_*` for `bridge/SwiftCore.kt`. The camera session is OpenCine's `Android/dji` (step 4). The DJI wire natives for OpenCine's `com.opencapture.opencine.dji.DjiNative` (`Java_com_opencapture_opencine_dji_DjiNative_*`) come from OpenCine `Sources/OpenCineDJIAndroid/DjiNativeJNI.swift`, linked into the same `.so`. OpenCineJNISupport provides the shared JNI helpers and re-exports OpenCineJNI's NDK `<jni.h>` types on Android.
+3. **Cross-compile, don’t SPM-link** — Gradle task `:app:stageSwiftCore` (`just android-core`, `scripts/android-stage-swift-core.sh`) builds `aarch64-unknown-linux-android29` and stages `libOpenPocketCineAndroid.so` plus the Swift runtime `.so` closure into generated jniLibs. **arm64-v8a only.** Toolchain pin: Swift **6.3.3** + `swift-6.3.3-RELEASE_android`.
+4. **Kotlin seam:** OpenCine's `dji` module holds the DJI session (`DjiCameraSession`, which drives the camera over JNI and exposes OpenCineCore `CameraSession` through `DjiCameraSessionAdapter`) and everything it runs on: BLE link, Wi-Fi joining, datalink driver, command and status models, gimbal programs, connection and live-view policies, `ConnectionPhase`, `DjiNative`. This app supplies `session/AppSessionHost.kt` (operator preferences, feed incident recorder, reliability reporting, build identity, ML Kit face detection) and keeps all UI; `AppModel` loads `libOpenPocketCineAndroid.so` (through `SwiftCore.isAvailable`) before any session code runs. Kotlin does not pack protocol bytes.
+5. **Same applicationId as iOS bundle** (`com.opencapture.openpocketcine`). Design tokens are duplicated as floats in `Theme.kt` / `pairing/StartupDesign.kt` so connection screens match.
+
+iOS links the core via Swift Package Manager. Android does **not** consume that SPM product at runtime — only the cross-compiled `.so`.
+
+### Android SDK
+
+The app and the shared `monitor-ui` library use the same `androidCompileSdk`
+version in their `gradle/libs.versions.toml` catalogs (API 37). Install the stable SDK platform
+with `sdkmanager "platforms;android-37.0"`, or let Gradle install it after accepting
+the Android SDK licenses. `minSdk` remains 29 and the app's `targetSdk` remains 36.
+The newer compile SDK satisfies the Compose dependencies' declared requirements;
+it does not opt the app into Android 17 target-SDK behavior changes.
+
+AAR metadata checks stay enabled in both Android modules. The library's AAR
+packaging task consumes their output, so disabling them can fail on a clean
+checkout even when an incremental build passes with old outputs present.
+
+### Shared Android modules (OpenCine)
+
+`monitor-ui`, `core`, `media`, `decoder`, `dji`, `vulkan` and `multicam` live in the OpenCine
+platform repository (`Android/`, one Gradle build). Clone it next to this
+repository (`../OpenCine`, at the commit in `opencine-pins.txt`).
+`Apps/Android/settings.gradle.kts` includes `../../../OpenCine/Android` as the
+build `opencine` and substitutes each `com.opencapture.opencine:*` coordinate
+with its project. CI clones it into the same sibling path
+(`scripts/checkout-opencine.sh`). `just android-check` also runs the UI
+library's unit tests and lint (`:opencine:monitor-ui:testDebugUnitTest`,
+`:opencine:monitor-ui:lint`).
+
+## Pocket mapping
+
+| Piece | OpenPocketCine |
+| --- | --- |
+| Portable Swift core | `OpenPocketViewCore` (DUML, HEVC depacketizer, saved-camera records, connection phase) |
+| JNI facade | `OpenPocketCineAndroidFacade`: BLE/Wi-Fi/UDP session that calls the core, JNI surface for scan/connect/live-frame callbacks |
+| OpenCine `dji` | DJI session `DjiCameraSession`, BLE link, Wi-Fi joining, datalink, wire models, gimbal programs, `ConnectionPhase` (BLE, Wi-Fi, datalink stages), `DjiCameraSessionAdapter`, JNI facade `DjiNative`; the app's side is `AppSessionHost` |
+| Compose shell | Splash + saved cameras + Osmo connection wizard drawn by the shared pair page in the monitor-ui palette |
+| Saved cameras | `SharedPreferences` file `openpocketcine.saved-cameras`, key `records-json`. Wi-Fi passwords stay out of prefs (re-read over BLE, same as iOS) |
+| applicationId | `com.opencapture.openpocketcine` on iOS and Android |
+
+## Do not copy from OpenZCine Android
+
+Nikon PTP-IP, AccessorySetupKit / `NIKON_ZR_*` SSIDs, multi-setup path chips, OCR SSID scanner, USB-C/HDMI paths, monitor assist tools.
+
+## First Android milestone
+
+Done in-tree (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)):
+
+1. Same Swift Android SDK pin OpenZCine uses (6.3.3).
+2. `OpenPocketCineAndroidFacade` + OpenCineJNISupport in `Package.swift` (`#if os(Android)` JNI).
+3. Gradle `:app:stageSwiftCore` stages `libOpenPocketCineAndroid.so`.
+4. Compose splash → empty-store wizard / saved list → live HEVC (MediaCodec) using enable-once + ACK pump.
+
+## Android I/O notes
+
+How this shell implements [`docs/PARITY.md`](docs/PARITY.md). Contract language stays there.
+
+### Connection
+
+`bindProcessToNetwork` then UDP `0.0.0.0:0` after `Network.bindSocket`. A local
+VPN (AdGuard / Blokada / RethinkDNS) that did not `allowBypass()` still owns
+the process — do not add another bind path (#239). MediaCodec
+uses wall-clock PTS and `KEY_LOW_LATENCY`; do not pace at 30 fps. Cached Wi-Fi
+creds sit in private prefs, not saved-camera JSON. `holdsMonitor` must not latch
+a forever skip after a SoftAP flap. `isProcessBound` stays true while
+reassociation grace is armed (the `Network` object may already be null).
+Handshake miss is `DatalinkError.NoHandshake` (iOS `DatalinkError.noHandshake`),
+not Kotlin `error()`. Session recovery catches it; `cameraSoftAPDecision` JNI is
+the production `CameraSoftAP` ladder.
+
+### Live picture
+
+Vulkan (`libopc_vulkan.so`, built by the sibling OpenCine `Android/vulkan` module) when init succeeds: MediaCodec → `ImageReader`
+AHardwareBuffer → YCbCr convert 1:1 at the 720p HEVC raster (sampling 4:2:0
+at panel size is the Adreno mosaic). The Rec.709 cube is a 3D texture
+(`CIColorCube`); a 2D blue-slice atlas bled across tiles and blotched
+D-Log2. Cube at 720p, then stretch Rec.709 (iOS `bakeSize` then bilinear).
+Cubing after the upsample blotched D-Log2 vs iOS. Peaking / scopes / face
+stay on 720p RGB.
+Peaking is the GLES 3-pass (vertical re-blur, mask, closed
+stroke) on the unmanaged 720p RGB, then composited over the grade.
+Assists-off is the 720p RGB blit. GLES
+`FeedEffectsGlProgram` on `GL_TEXTURE_EXTERNAL_OES` is the fallback. Settings and the media library
+cover the monitor; they must not drop pktType `0x02` ingest (parity: live
+HEVC held). API 34+ SurfaceView stays attached while that overlay covers it
+(`SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT`) — visibility-follow destroyed the
+swapchain on S25 and left a black well while UDP stayed live (#248). A
+failed swapchain attach retries; it is not a GLES fallback.
+The decoder ImageReader is created in the Vulkan session constructor
+(same tick as LIVE). `nativeCreate` runs on `opc.vk.gpu` and compiles
+only YCbCr copy + blit — `feed.frag` waits until after the first
+picture. Compiling the LUT pipes on the ImageReader thread missed
+`0x09/0xa8` and left WAITING FOR LIVE VIEW up 5–10 s. Present never
+waits forever on the GPU fence. LUT stretch is the blit of the 720p
+bake. Each present acquires the AHB from `FOREIGN_EXT` and
+releases it after the 720p YCbCr copy — a missing release left static
+skip-blocks in the GPU cache until motion overwrote them.
+
+Return-from-gallery uses `restartLiveViewAfterMedia` (captured live-start),
+not `DatalinkDriver.startLiveView` alone. Drop the swapchain in
+`surfaceDestroyed` before Android destroys the window mutex; drain
+`opc.vk.img` before `nativeDestroy`. Contract: [`docs/live-session.md`](docs/live-session.md).
+
+### HUD glass
+
+Kyant `AndroidLiquidGlass` on API 33+ / ≥4 GB devices that are not
+`isLowRamDevice`. FULL stays FULL (no frame-budget demote). Kyant cannot sample
+a SurfaceView. Do not blit a PixelCopy over the well — that 20 Hz nearest copy
+became the picture (S25 mosaic). Pairing, Operator Setup, and media list rows
+stay solid fills.
+
+### Assists GPU
+
+Assists-off is one YCbCr blit of the MediaCodec AHB (hardware `c2.qti` / Exynos
+HEVC, not `c2.android`). LUT / FALSE / ZEBRA / PEAK add the 3D-cube grade pass.
+WAVE / PARADE /
+VECTOR / HISTO tap a 200-wide downsample (213×120 on 720p) at 25 Hz
+(10 Hz with three or more scopes) and paint in Compose Canvas.
+Face AF samples unmanaged 720p RGB (640×360 readback, 320×180 detector
+input) through ML Kit Face
+Detection (Vision-class, 3/4 views) — not `android.media.FaceDetector`
+and not a PixelCopy of the swapchain (that copy is already mirrored
+when TT180/MIRROR is on, and the overlay mirrors again). Lock requires
+an eye landmark (iOS `FaceStructurePolicy`); ML Kit tracking IDs stay
+off so `FaceTrackHold` owns persistence. The Vulkan readback is NV21 from
+`nativeCopyFace` (2×2 box to 320×180), requested only when `LiveFaceDetector.wantsFrame` says the
+detector will run (10 Hz after a second without a face, 25 Hz while tracking).
+WAVE / PARADE accumulate into a 250×153 bitmap off the UI thread, reusing
+the previous build's live layer as the trail (`ScopeTraceRaster.TraceLayers`); VECTOR uses
+the 128-bin raster.
+An inspector-only scope admits the tap and scope work at 5 Hz in both the GLES
+and Vulkan schedulers (`ScopeTapPolicy.tapIntervalNs` / `scopeWorkDue`); a
+visible backdrop may keep the faster raw tap, but not faster scope work.
+GLES keeps compiled programs and uploaded cubes when a plan change leaves the
+cubes and peaking set alone (`FeedEffectsGlProgram.adopt`), and skips the grade
+pass when no look is on.
+
+### HUD status
+
+Compose collects `DjiCameraSession.chromeStatus`: DUML telemetry reaches it
+at most every 200 ms (`LiveChromeThrottle`, iOS parity). Operator fields and
+control writes publish immediately. Control code reads `status`.
+
+### Media decode
+
+Playback grades the 720p LRF/XRF proxy in GLES (ExoPlayer → OES → TextureView).
+An original without a proxy decodes natively but grades on the
+`FeedPresentPolicy.workingSize` raster (1440 wide, aspect kept, four-tap
+downsample). A paused or held frame is not re-presented; a new picture, look,
+size or upscaler change presents at once.
+Share / Save to Photos caches the original (`MediaHTTP.deliveryPath`).
+Playback cache streams LRF/XRF (and originals) to disk (`downloadFile`).
+`fetchBytes` is thumbs/SCR only and is capped at 8 MiB — a missing
+Content-Length must not grow a `ByteArrayOutputStream` until OOM (#188).
+
+## OpenZCine Android patterns adopted
+
+Not Nikon PTP/USB/Wear/OCR:
+
+- Keystore AES/GCM Wi-Fi password store (`CameraWifiCredentialStore`)
+- `WIFI_MODE_FULL_LOW_LATENCY` lock while live
+- In-app-gated operator haptics
+- Shared `CubeLUT` packer (`LUTLibraryWire`) for GLES-ready RGBA cubes
+- GLES ES2 feed-effect shaders under `assets/shaders/`
+- Media cache complete-at-exact-length + `noBackupFilesDir`
+- Sticky `ACTION_BATTERY_CHANGED` readout instead of a 1 Hz poll

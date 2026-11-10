@@ -1,0 +1,803 @@
+import AVFoundation
+import CoreImage
+import CoreVideo
+import MonitorUI
+import OpenCineApple
+import OpenCineHostedTestSupport
+import OpenCineCameraControls
+import OpenCineCameraVocabulary
+import OpenPocketViewCore
+import XCTest
+import OpenCineMedia
+
+@testable import OpenPocketCine
+
+// Expectations in this file are fulfilled by the owners' own events (decode, delivery, HTTP,
+// render); every 30 s timeout is a hang guard, not a budget.
+
+/// App-layer pipeline: decoder → `LiveAssistEngine` → `LiveFrameSampleBus` →
+/// `ScopeAssistBundle`. Curve math itself is covered by the core suite — these
+/// tests pin the plumbing, throttle, layer handoff, and effect compositing.
+@MainActor
+final class LiveFrameSampleTests: XCTestCase {
+    /// This test's monitored source (XCTest makes a fresh one per test).
+    private let ceiling = DJIScopeExposureCeiling()
+
+    func testVideoFallbackStillInfersLogFromTap() async {
+        let engine = LiveAssistEngine()
+        var effects = MonitorFrameEffects()
+        effects.histogram = true
+        let sampled = expectation(description: "Unknown video scope sample")
+        let buffer = ScopeTestBuffers.makeBGRA { x, _ in x < 64 ? 16 : 247 }
+        engine.updatePolicy(effects: effects, transfer: .rec709)
+        engine.submit(buffer) { result in
+            guard let bundle = result.bundle else { return }
+            XCTAssertEqual(bundle.transfer, .dlog2)
+            sampled.fulfill()
+        }
+        await fulfillment(of: [sampled], timeout: 30)
+    }
+
+    func testPhotoScopesDoNotInferLogFromSceneBrightness() async {
+        let assist = LiveAssistState()
+        assist.syncLUT(to: .dLog2, isPhoto: true)
+        var effects = assist.effects
+        effects.histogram = true
+        effects.waveform = true
+        let engine = LiveAssistEngine()
+        let sampled = expectation(description: "Photo scope sample")
+        let buffer = ScopeTestBuffers.makeBGRA { x, _ in x < 64 ? 16 : 247 }
+        engine.updatePolicy(effects: effects, transfer: .rec709)
+        engine.submit(buffer) { result in
+            guard let bundle = result.bundle else { return }
+            XCTAssertEqual(result.transfer, .rec709)
+            XCTAssertEqual(result.colorMode, .normal)
+            XCTAssertEqual(bundle.transfer, .rec709)
+            sampled.fulfill()
+        }
+        await fulfillment(of: [sampled], timeout: 30)
+    }
+
+    func testImageInspectorReceivesLatestRawPictureWithAllScopesOff() async throws {
+        let bus = LiveFrameSampleBus()
+        let decoder = HevcDecoder()
+        let effects = MonitorFrameEffects().withInspectorDemand(.peaking)
+        decoder.attach(sampleBus: bus, effects: { effects }, transfer: { .dlog2 })
+        XCTAssertFalse(effects.needsScopes)
+        XCTAssertFalse(effects.needsGPUFeed)
+
+        for _ in 0..<2 {
+            let source = ScopeTestBuffers.makeEdgeBuffer()
+            decoder.handleDecodedFrame(source, effects: effects, transfer: .dlog2)
+            _ = await HostedCondition.wait { bus.inspectorSource?.buffer === source }
+            XCTAssertTrue(
+                bus.inspectorSource?.buffer === source,
+                "The inspector must borrow the newest raw main-feed buffer without a scope")
+            XCTAssertEqual(bus.inspectorSource?.transfer, .dlog2)
+        }
+        XCTAssertEqual(bus.generation, 0, "Raw picture retention must not invalidate scope views")
+        XCTAssertEqual(bus.publishedScopes, 0, "Image previews must not perform scope work")
+    }
+
+    func testFailedPresentationDoesNotEmitPictureHeartbeat() async throws {
+        let bus = LiveFrameSampleBus()
+        let decoder = HevcDecoder()
+        decoder.effects.histogram = true
+        decoder.unlockHardwareDecoder()
+        decoder.sampleBus = bus
+        var heartbeats = 0
+        decoder.onPresentedFrame = { heartbeats += 1 }
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(
+            CVPixelBufferCreate(
+                kCFAllocatorDefault, 1, 1, kCVPixelFormatType_32BGRA, nil, &buffer),
+            kCVReturnSuccess)
+        decoder.handleDecodedFrame(try XCTUnwrap(buffer))
+        _ = await HostedCondition.wait { bus.decodedFrames > 0 }
+        XCTAssertEqual(bus.decodedFrames, 1, "Exercise the real assist completion")
+        XCTAssertEqual(heartbeats, 0, "A rejected display buffer must not hide a picture stall")
+        XCTAssertNil(decoder.lastPresentedAt)
+    }
+
+    func testHandleDecodedFramePublishesScopes() async {
+        let bus = LiveFrameSampleBus()
+        let decoder = HevcDecoder()
+        var fx = MonitorFrameEffects()
+        fx.histogram = true
+        fx.waveform = true
+        decoder.attach(sampleBus: bus, effects: { fx }, transfer: { .rec709 })
+        decoder.effects = fx
+
+        decoder.handleDecodedFrame(
+            ScopeTestBuffers.makeEdgeBuffer(), effects: fx, transfer: .rec709)
+
+        _ = await HostedCondition.wait { bus.decodedFrames >= 1 && bus.publishedScopes >= 1 }
+
+        XCTAssertGreaterThanOrEqual(
+            bus.decodedFrames, 1, "pixel-buffer callback must increment decodedFrames")
+        XCTAssertGreaterThanOrEqual(
+            bus.publishedScopes, 1, "scopes must sample the ingested buffer")
+        XCTAssertGreaterThanOrEqual(bus.generation, 1, "SwiftUI scopes observe generation")
+        XCTAssertNotNil(bus.sourcePixelBuffer, "bus must publish the source buffer")
+        XCTAssertEqual(bus.transfer, .rec709)
+        XCTAssertEqual(bus.colorMode, .normal)
+        XCTAssertEqual(
+            bus.bundle.transfer, .rec709, "views read bundle.transfer, never session status")
+        XCTAssertFalse(bus.bundle.samples.points.isEmpty, "WAVE needs the shared point bundle")
+        XCTAssertFalse(
+            bus.bundle.samples.histogramLuma.allSatisfy { $0 == 0 }, "native histogram must fill")
+        XCTAssertFalse(
+            bus.bundle.histogramDisplay.luma.allSatisfy { $0 == 0 },
+            "display histogram must be precomputed")
+        XCTAssertGreaterThan(bus.bundle.revision, 0)
+    }
+
+    func testHandleDecodedFrameIncrementsGenerationEachCall() async {
+        let bus = LiveFrameSampleBus()
+        let decoder = HevcDecoder()
+        var fx = MonitorFrameEffects()
+        fx.histogram = true
+        fx.waveform = true
+        decoder.attach(sampleBus: bus, effects: { fx }, transfer: { .rec709 })
+        decoder.effects = fx
+
+        decoder.handleDecodedFrame(
+            ScopeTestBuffers.makeEdgeBuffer(), effects: fx, transfer: .rec709)
+        _ = await HostedCondition.wait { bus.generation >= 1 }
+        let first = bus.generation
+        XCTAssertGreaterThanOrEqual(first, 1, "first scoped sample must tick generation")
+
+        // Past the 25 Hz gate (a lower bound: a longer stall only passes it further).
+        try? await Task.sleep(for: .milliseconds(50))
+        decoder.handleDecodedFrame(
+            ScopeTestBuffers.makeFlatBuffer(code: 200), effects: fx, transfer: .rec709)
+        _ = await HostedCondition.wait { bus.generation > first }
+
+        XCTAssertGreaterThan(
+            bus.generation, first, "each scoped sample past the 25 Hz gate must tick generation")
+        XCTAssertGreaterThanOrEqual(bus.decodedFrames, 2, "sequential feed drains every frame")
+    }
+
+    // MARK: - Layer / feed handoff
+
+    func testLUTOffHandsHEVCBackToDisplayLayerWithoutFlush() {
+        let decoder = HevcDecoder()
+        let feed = CIFeedView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+        decoder.processedFeed = feed
+        let cube = BuiltInLook.mono.cube()
+        var fx = MonitorFrameEffects()
+        fx.lutDimension = cube.size
+        fx.lutRGBA = cube.rgbaComponents.withUnsafeBytes { Data($0) }
+        decoder.effects = fx
+        feed.isHidden = false
+        decoder.displayLayer.isHidden = true
+        XCTAssertTrue(decoder.effects.needsGPUFeed)
+        XCTAssertTrue(decoder.effects.needsSample)
+
+        decoder.effects = MonitorFrameEffects()
+        XCTAssertFalse(decoder.effects.needsGPUFeed)
+        XCTAssertFalse(decoder.displayLayer.isHidden, "LUT off must show the identity layer")
+        XCTAssertTrue(
+            feed.isHidden,
+            "opaque CIFeedView must not cover Rec.709 / HLG HEVC")
+        XCTAssertFalse(decoder.displayedImageRemoved, "toggle must not flushAndRemoveImage")
+        XCTAssertFalse(decoder.videoToolboxActive, "no format yet — VT never opened")
+        XCTAssertFalse(decoder.awaitingIDR, "LUT off must not hold IDR")
+    }
+
+    func testLUTOffAfterDecodedFrameDoesNotFlushOrHoldIDR() async {
+        let bus = LiveFrameSampleBus()
+        let decoder = HevcDecoder()
+        let feed = CIFeedView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+        decoder.processedFeed = feed
+        let cube = BuiltInLook.mono.cube()
+        var fx = MonitorFrameEffects()
+        fx.lutDimension = cube.size
+        fx.lutRGBA = cube.rgbaComponents.withUnsafeBytes { Data($0) }
+        decoder.attach(sampleBus: bus, effects: { fx }, transfer: { .rec709 })
+        decoder.effects = fx
+        decoder.handleDecodedFrame(
+            ScopeTestBuffers.makeEdgeBuffer(), effects: fx, transfer: .rec709)
+        _ = await HostedCondition.wait { bus.decodedFrames >= 1 }
+        XCTAssertGreaterThanOrEqual(bus.decodedFrames, 1)
+
+        decoder.effects = MonitorFrameEffects()
+        XCTAssertFalse(
+            decoder.displayedImageRemoved, "LUT off after a picture must keep the last frame")
+        XCTAssertFalse(decoder.awaitingIDR)
+        XCTAssertTrue(feed.isHidden)
+        XCTAssertFalse(decoder.displayLayer.isHidden)
+        XCTAssertFalse(decoder.videoToolboxActive)
+    }
+
+    func testOverlayAndSampleOnlyEffectsKeepIdentityDisplayLayer() {
+        var zebra = MonitorFrameEffects()
+        zebra.zebra = true
+        var split = zebra
+        split.splitComparison = true
+        var falseColor = MonitorFrameEffects()
+        falseColor.falseColor = true
+        struct Case {
+            let name: String
+            let steps: [MonitorFrameEffects]
+            let feedStartsVisible: Bool
+            var needsSample: Bool? = nil
+            var needsGPUFeed: Bool? = nil
+            var needsOverlayFeed: Bool? = nil
+            var feedHidden: Bool? = nil
+            var keepsPictureAndIDR = false
+        }
+        let cases = [
+            // Face AF starts VT but the identity picture stays on the display layer; the
+            // opaque CIFeedView must not cover the layer while Face AF is reading buffers.
+            Case(
+                name: "Face AF", steps: [MonitorFrameEffects().withFaceAF(true)],
+                feedStartsVisible: true, needsSample: true, needsGPUFeed: false, feedHidden: true),
+            // Zebra and false colour must not cover Rec.709 / D-Log2 identity with a
+            // remade CI picture.
+            Case(
+                name: "zebra", steps: [zebra], feedStartsVisible: false, needsOverlayFeed: true),
+            // 50/50 without a cube must not cover HEVC with replace-grade Metal (#218).
+            Case(
+                name: "split without cube", steps: [zebra, split], feedStartsVisible: false,
+                needsOverlayFeed: true, keepsPictureAndIDR: true),
+            Case(
+                name: "false colour", steps: [falseColor], feedStartsVisible: false,
+                needsOverlayFeed: true),
+        ]
+        for c in cases {
+            let decoder = HevcDecoder()
+            let feed = CIFeedView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+            decoder.processedFeed = feed
+            feed.isHidden = !c.feedStartsVisible
+            decoder.displayLayer.isHidden = c.feedStartsVisible
+            for step in c.steps { decoder.effects = step }
+            if let expected = c.needsSample {
+                XCTAssertEqual(decoder.effects.needsSample, expected, c.name)
+            }
+            if let expected = c.needsGPUFeed {
+                XCTAssertEqual(decoder.effects.needsGPUFeed, expected, c.name)
+            }
+            if let expected = c.needsOverlayFeed {
+                XCTAssertEqual(decoder.effects.needsOverlayFeed, expected, c.name)
+            }
+            XCTAssertFalse(decoder.effects.replacesIdentityFeed, c.name)
+            XCTAssertFalse(decoder.displayLayer.isHidden, "\(c.name) must keep the identity layer")
+            if let expected = c.feedHidden { XCTAssertEqual(feed.isHidden, expected, c.name) }
+            if c.keepsPictureAndIDR {
+                XCTAssertFalse(decoder.awaitingIDR, c.name)
+                XCTAssertFalse(decoder.displayedImageRemoved, c.name)
+            }
+        }
+    }
+
+    func testFastUpscalerDoesNotStealIdentityLayer() {
+        let previous = FeedUpscaleSwitch.shared.upscaler
+        FeedUpscaleSwitch.shared.upscaler = .lanczos
+        defer { FeedUpscaleSwitch.shared.upscaler = previous }
+
+        let decoder = HevcDecoder()
+        decoder.feedUpscaler = .lanczos
+        let feed = CIFeedView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+        decoder.processedFeed = feed
+        feed.isHidden = false
+        decoder.displayLayer.isHidden = true
+
+        decoder.effects = MonitorFrameEffects()
+        XCTAssertFalse(decoder.displayLayer.isHidden)
+        XCTAssertTrue(feed.isHidden)
+
+        var zebra = MonitorFrameEffects()
+        zebra.zebra = true
+        decoder.effects = zebra
+        XCTAssertFalse(
+            decoder.displayLayer.isHidden,
+            "Fast upscale must not remake identity — zebra stays a transparent overlay")
+    }
+
+    func testRec709AndHDRWithoutLUTUseDisplayLayer() {
+        let decoder = HevcDecoder()
+        let feed = CIFeedView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+        decoder.processedFeed = feed
+        feed.isHidden = false
+        decoder.displayLayer.isHidden = true
+
+        decoder.incomingTransfer = .rec709
+        decoder.effects = MonitorFrameEffects()
+        XCTAssertFalse(decoder.effects.needsGPUFeed)
+        XCTAssertFalse(decoder.displayLayer.isHidden)
+        XCTAssertTrue(feed.isHidden)
+
+        decoder.incomingTransfer = .hdr
+        decoder.effects = MonitorFrameEffects()
+        XCTAssertFalse(decoder.effects.needsGPUFeed)
+        XCTAssertFalse(decoder.displayLayer.isHidden)
+        XCTAssertTrue(feed.isHidden)
+        XCTAssertFalse(decoder.displayedImageRemoved)
+    }
+
+    func testDLog2LUTToRec709HidesOpaqueFeed() {
+        let decoder = HevcDecoder()
+        let feed = CIFeedView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+        decoder.processedFeed = feed
+        let cube = BuiltInLook.mono.cube()
+        var logFX = MonitorFrameEffects()
+        logFX.lutDimension = cube.size
+        logFX.lutRGBA = cube.rgbaComponents.withUnsafeBytes { Data($0) }
+        logFX.colorMode = .dLog2
+        decoder.incomingTransfer = .dlog2
+        decoder.effects = logFX
+        feed.isHidden = false
+        decoder.displayLayer.isHidden = true
+
+        decoder.incomingTransfer = .rec709
+        decoder.effects = MonitorFrameEffects()
+        XCTAssertFalse(decoder.effects.needsGPUFeed)
+        XCTAssertFalse(decoder.displayLayer.isHidden)
+        XCTAssertTrue(feed.isHidden)
+        XCTAssertFalse(decoder.videoToolboxActive)
+        XCTAssertFalse(decoder.displayedImageRemoved)
+    }
+
+    func testLUTOnlyPresentDoesNotTickScopeGeneration() async {
+        let bus = LiveFrameSampleBus()
+        let decoder = HevcDecoder()
+        let cube = BuiltInLook.mono.cube()
+        var fx = MonitorFrameEffects()
+        fx.lutDimension = cube.size
+        fx.lutRGBA = cube.rgbaComponents.withUnsafeBytes { Data($0) }
+        decoder.attach(sampleBus: bus, effects: { fx }, transfer: { .rec709 })
+        decoder.effects = fx
+
+        decoder.handleDecodedFrame(
+            ScopeTestBuffers.makeEdgeBuffer(), effects: fx, transfer: .rec709)
+        _ = await HostedCondition.wait { bus.decodedFrames >= 1 }
+
+        XCTAssertGreaterThanOrEqual(bus.decodedFrames, 1)
+        // Negative window: a LUT-only present must not tick the scope generation within it.
+        try? await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(bus.generation, 0, "LUT present must not invalidate the chrome tree")
+        XCTAssertEqual(bus.publishedScopes, 0)
+    }
+
+    // MARK: - Per-source exposure ceiling (STATE-01)
+
+    /// Two cameras each own a ceiling. One camera's ISO and tap ratchet must never move
+    /// the other's WAVE 100, zebra or clip lamps (a process-wide ceiling did).
+    func testTwoSourcesKeepIndependentExposureCeilings() async {
+        var fx = MonitorFrameEffects()
+        fx.waveform = true
+        func feed(_ bus: LiveFrameSampleBus, max: UInt8, iso: Int?) -> HevcDecoder {
+            let decoder = HevcDecoder()
+            decoder.attach(sampleBus: bus, effects: { fx }, transfer: { .dlog2 })
+            XCTAssertEqual(
+                decoder.updateSourceCalibration(iso: iso, source: decoder.sourceToken), iso != nil)
+            decoder.effects = fx
+            decoder.incomingTransfer = .dlog2
+            decoder.handleDecodedFrame(
+                ScopeTestBuffers.makeBGRA { x, _ in x < 64 ? 78 : max },
+                effects: fx, transfer: .dlog2)
+            return decoder
+        }
+        let a = LiveFrameSampleBus()
+        let b = LiveFrameSampleBus()
+        let decoders = [feed(a, max: 233, iso: 800), feed(b, max: 160, iso: nil)]
+        _ = await HostedCondition.wait { a.publishedScopes >= 1 && b.publishedScopes >= 1 }
+        XCTAssertEqual(a.bundle.clipByte, 233, "camera A ratchets its own ISO 800 ceiling")
+        XCTAssertEqual(b.bundle.clipByte, 247, "camera B keeps the reference ceiling")
+        XCTAssertEqual(
+            b.exposureCeiling.resolvedISO(), DJIScopeExposureCeiling.referenceEI)
+        XCTAssertEqual(a.exposureCeiling.clipByte(transfer: .dlog2), 233)
+        XCTAssertEqual(decoders.count, 2)
+    }
+
+    // MARK: - Transfer plumbing
+
+    func testDLog2TransferRidesWithSample() async {
+        let bus = LiveFrameSampleBus()
+        let decoder = HevcDecoder()
+        var fx = MonitorFrameEffects()
+        fx.histogram = true
+        fx.waveform = true
+        decoder.attach(sampleBus: bus, effects: { fx }, transfer: { .dlog2 })
+        decoder.effects = fx
+        decoder.incomingTransfer = .dlog2
+
+        decoder.handleDecodedFrame(
+            ScopeTestBuffers.makeFlatBuffer(code: 78), effects: fx, transfer: .dlog2)
+
+        _ = await HostedCondition.wait { bus.publishedScopes >= 1 && bus.colorMode == .dLog2 }
+
+        XCTAssertEqual(bus.transfer, .dlog2, "ColorMode D-Log2 must become MonitorTransfer.dlog2")
+        XCTAssertEqual(bus.colorMode, .dLog2)
+        XCTAssertNotNil(bus.sourcePixelBuffer)
+        XCTAssertEqual(bus.bundle.transfer, .dlog2, "the bundle carries the transfer for the views")
+        XCTAssertFalse(bus.bundle.samples.histogramLuma.allSatisfy { $0 == 0 })
+    }
+
+    func testTransferResolutionAndColorModeRoundTrip() {
+        XCTAssertEqual(MonitorTransfer.resolved(nil, colorMode: nil), .rec709)
+        XCTAssertEqual(MonitorTransfer.resolved(nil, colorMode: .dLog2), .dlog2)
+        XCTAssertEqual(MonitorTransfer.resolved(.dlog, colorMode: .normal), .dlog, "status wins")
+        // I-Log and the Nikon curves are shared curves, not DJI wire modes: no ColorMode to
+        // round-trip.
+        let noWireMode: Set<MonitorTransfer> = [.ilog, .srgb, .nlog, .log3G10]
+        for transfer in MonitorTransfer.allCases where !noWireMode.contains(transfer) {
+            XCTAssertEqual(MonitorTransfer(transfer.colorMode), transfer, "wire round trip")
+        }
+    }
+
+    func testMissingColorModeKeepsPreviousLogTransfer() {
+        XCTAssertEqual(
+            MonitorTransfer.resolved(nil, colorMode: nil, previous: .dlog2),
+            .dlog2,
+            "nil @2 must not drop WAVE back to Rec.709 — that shelves D-Log2 black at ~8")
+        XCTAssertEqual(
+            MonitorTransfer.resolved(nil, colorMode: nil, previous: .dlog),
+            .dlog)
+        XCTAssertEqual(
+            MonitorTransfer.resolved(.rec709, colorMode: nil, previous: .dlog2),
+            .rec709,
+            "an explicit Normal reading still wins")
+    }
+
+    func testNilStatusTransferDoesNotWipeDecoderLogTransfer() {
+        let decoder = HevcDecoder()
+        decoder.incomingTransfer = .dlog2
+        decoder.adoptIncomingTransfer(nil)
+        XCTAssertEqual(
+            decoder.incomingTransfer, .dlog2,
+            "VideoView.wire used to assign nil and park D-Log2 paper black at ~8 IRE")
+        decoder.adoptIncomingTransfer(.rec709)
+        XCTAssertEqual(decoder.incomingTransfer, .rec709, "explicit Normal still applies")
+    }
+
+    func testDLog2TapSignaturePromotesDefaultRec709Transfer() async {
+        let bus = LiveFrameSampleBus()
+        let decoder = HevcDecoder()
+        var fx = MonitorFrameEffects()
+        fx.waveform = true
+        decoder.attach(sampleBus: bus, effects: { fx }, transfer: { .rec709 })
+        decoder.effects = fx
+        decoder.handleDecodedFrame(
+            ScopeTestBuffers.makeBGRA { x, _ in x < 64 ? 16 : 247 },
+            effects: fx, transfer: .rec709)
+
+        _ = await HostedCondition.wait {
+            bus.publishedScopes >= 1 && bus.bundle.transfer == .dlog2
+        }
+
+        XCTAssertEqual(
+            bus.bundle.transfer, .dlog2,
+            "16/247 tap is D-Log2 paper black + live ceiling; Rec.709 WAVE is the screenshot shelf")
+        let plot = MonitorWaveformAxis.plotRect(in: CGSize(width: 250, height: 153))
+        XCTAssertEqual(
+            MonitorWaveformAxis.traceY(
+                16, transfer: bus.bundle.transfer, clipByte: bus.bundle.clipByte, plot),
+            MonitorWaveformAxis.scaleLineY(0, plot),
+            accuracy: 0.1)
+        XCTAssertEqual(
+            MonitorWaveformAxis.traceY(
+                247, transfer: bus.bundle.transfer, clipByte: bus.bundle.clipByte, plot),
+            MonitorWaveformAxis.scaleLineY(100, plot),
+            accuracy: 0.1)
+    }
+
+    // MARK: - Throttle
+
+    func testMoreScopesAndHeatSlowTheTapNeverSpeedItUp() {
+        XCTAssertGreaterThan(
+            ScopeSampler.minInterval(activeScopeCount: 3, thermalState: .nominal),
+            ScopeSampler.minInterval(activeScopeCount: 2, thermalState: .nominal),
+            "more than two scopes go slower, not faster")
+        XCTAssertGreaterThan(
+            ScopeSampler.minInterval(activeScopeCount: 1, thermalState: .serious),
+            ScopeSampler.minInterval(activeScopeCount: 1, thermalState: .nominal),
+            "thermal tiers shed the interval, never the sampling density")
+    }
+
+    // MARK: - Sampler contracts (app layer)
+
+    func testVertexMathMatchesLevelTable() {
+        // WAVE / PARADE / HISTO ride ``MonitorWaveformAxis`` (0 / paper-IRE / 100).
+        let plot = MonitorWaveformAxis.plotRect(in: CGSize(width: 250, height: 153))
+        for transfer in MonitorTransfer.allCases {
+            let table = MonitorWaveformAxis.levelTable(
+                for: transfer, clipByte: ceiling.clipByte(transfer: transfer))
+            let bytes: [UInt8] = [0, 16, 78, 128, 200, 255]
+            let points = bytes.map {
+                ScopePoint(
+                    xRatio: 0.5, yRatio: 0.5, red: $0, green: $0, blue: $0, luma: $0)
+            }
+            let capacity = MonitorScopeTraceMetal.maxVertexCount(
+                points: points.count, mode: .waveform(.rgb))
+            var vertices = [MonitorScopeTraceMetal.Vertex](
+                repeating: MonitorScopeTraceMetal.Vertex(position: .zero, size: 0, color: .zero),
+                count: capacity)
+            let written = vertices.withUnsafeMutableBufferPointer { out in
+                MonitorScopeTraceMetal.fillVertices(
+                    out, from: 0, points: points, mode: .waveform(.rgb), rect: plot,
+                    opacity: 1, levelTable: table)
+            }
+            XCTAssertEqual(
+                written, points.count * 3, "\(transfer) rgb writes one vertex per channel")
+            for (index, point) in points.enumerated() {
+                let expected = MonitorWaveformAxis.vertexPositionY(
+                    ire: Double(table[Int(point.luma)]), pointSize: 1, rect: plot)
+                for channel in 0..<3 {
+                    XCTAssertEqual(
+                        Double(vertices[index * 3 + channel].position.y), Double(expected),
+                        accuracy: 0.01,
+                        "\(transfer) byte \(point.luma) must ride the WAVE 0/100 axis")
+                }
+            }
+            for byte in bytes {
+                XCTAssertEqual(
+                    MonitorWaveformAxis.traceY(
+                        byte, transfer: transfer, clipByte: ceiling.clipByte(transfer: transfer),
+                        plot),
+                    MonitorWaveformAxis.plotY(Double(table[Int(byte)]), plot),
+                    accuracy: 0.01)
+            }
+        }
+    }
+
+    func testVectorscopeCubeWalkOnlyRunsWhenVectorscopeIsOn() {
+        let code: UInt8 = 78
+        var bytes = [UInt8]()
+        for _ in 0..<16 {
+            bytes.append(contentsOf: [code, code, code, 255])
+        }
+        let wave = ScopeSampler.sample(
+            bytes: bytes, width: 16, height: 1, bytesPerRow: 64,
+            transfer: .dlog2, clipByte: ceiling.clipByte(transfer: .dlog2), includePoints: true,
+            includeVectorPoints: false,
+            look: BuiltInLook.mono.cube(), previous: .empty)
+        XCTAssertFalse(wave.samples.points.isEmpty)
+        XCTAssertTrue(wave.vectorscopePoints.isEmpty, "WAVE/PARADE must not walk the monitor cube")
+        XCTAssertEqual(wave.revision, 1)
+        let vector = ScopeSampler.sample(
+            bytes: bytes, width: 16, height: 1, bytesPerRow: 64,
+            transfer: .dlog2, clipByte: ceiling.clipByte(transfer: .dlog2), includePoints: false,
+            includeVectorPoints: true,
+            look: nil, previous: wave)
+        XCTAssertTrue(
+            vector.samples.points.isEmpty, "points stay out of the bundle when WAVE is off")
+        XCTAssertFalse(vector.vectorscopePoints.isEmpty)
+        XCTAssertEqual(vector.revision, 2)
+        XCTAssertEqual(vector.trailSamples, wave.samples, "previous samples ride as the trail")
+    }
+
+    func testScopesIgnoreTheLUTLook() {
+        // WAVE / HISTO meter native camera codes regardless of the armed look.
+        let code: UInt8 = 78  // legal-scaled D-Log2 grey after the tap
+        var bytes = [UInt8]()
+        for _ in 0..<16 {
+            bytes.append(contentsOf: [code, code, code, 255])
+        }
+        let plain = ScopeSampler.sample(
+            bytes: bytes, width: 16, height: 1, bytesPerRow: 64,
+            transfer: .dlog2, clipByte: ceiling.clipByte(transfer: .dlog2), includePoints: true,
+            look: nil, previous: .empty)
+        let looked = ScopeSampler.sample(
+            bytes: bytes, width: 16, height: 1, bytesPerRow: 64,
+            transfer: .dlog2, clipByte: ceiling.clipByte(transfer: .dlog2), includePoints: true,
+            look: BuiltInLook.mono.cube(),
+            previous: .empty)
+        XCTAssertEqual(plain.samples, looked.samples, "the look must not leak into WAVE/HISTO")
+        let peak =
+            plain.samples.histogramLuma.enumerated()
+            .max(by: { $0.element < $1.element })?.offset ?? 0
+        XCTAssertEqual(peak, 78, "grey stays the native curve byte")
+        XCTAssertEqual(plain.samples.points.first?.luma, 78)
+        XCTAssertEqual(plain.samples.points.first?.red, 78)
+    }
+
+    func testDLog2LegalBlackLandsOnTheZeroLine() {
+        // Legal-scaled black (wire Y10 119 → tap byte 16) → native bin 16,
+        // WAVE IRE 0 → display bucket 0.
+        let code: UInt8 = 16
+        var bytes = [UInt8]()
+        for _ in 0..<16 {
+            bytes.append(contentsOf: [code, code, code, 255])
+        }
+        let bundle = ScopeSampler.sample(
+            bytes: bytes, width: 16, height: 1, bytesPerRow: 64,
+            transfer: .dlog2, clipByte: ceiling.clipByte(transfer: .dlog2), includePoints: true,
+            look: nil, previous: .empty)
+        XCTAssertEqual(
+            bundle.samples.histogramLuma[16], bundle.samples.points.count,
+            "every sampled pixel lands in native bin 16")
+        XCTAssertGreaterThan(bundle.samples.histogramLuma[16], 0)
+        let displayPeak =
+            bundle.histogramDisplay.luma.enumerated()
+            .max(by: { $0.element < $1.element })?.offset ?? 0
+        XCTAssertEqual(displayPeak, 0, accuracy: 2, "black anchor sits on the WAVE 0 bucket")
+        let plot = MonitorWaveformAxis.plotRect(in: CGSize(width: 250, height: 153))
+        XCTAssertEqual(
+            MonitorWaveformAxis.traceY(
+                16, transfer: .dlog2, clipByte: ceiling.clipByte(transfer: .dlog2), plot),
+            MonitorWaveformAxis.scaleLineY(0, plot),
+            accuracy: 0.5)
+        let histoPlot = HistogramAssist.plotRect(in: MonitorScopePanelSize.histogram)
+        XCTAssertEqual(
+            HistogramAssist.plotX(Double(displayPeak) / 255 * 100, in: histoPlot),
+            HistogramAssist.ireX(0, in: histoPlot),
+            accuracy: 1.5,
+            "display-bucket 0 sits on the HISTO 0 line")
+        XCTAssertTrue(bundle.traffic.anyCrush)
+        XCTAssertFalse(bundle.traffic.anyClip)
+    }
+
+    // MARK: - GPU effects
+
+    func testPeakingPaintsRedOnEdges() {
+        let buffer = ScopeTestBuffers.makeEdgeBuffer(width: 160, height: 90)
+        let source = CIImage(cvPixelBuffer: buffer)
+        var fx = MonitorFrameEffects()
+        fx.peaking = true
+        fx.peakingColor = .red
+        let output = LiveMonitorCompositor.apply(to: source, effects: fx)
+        let context = CIContext(options: [.cacheIntermediates: false])
+        let red = Self.maxRedDelta(output: output, source: source, context: context)
+        XCTAssertGreaterThan(red, 0.15, "PEAK must paint red on a hard edge")
+    }
+
+    func testDLog2MidGreyDoesNotZebraDefaultMidtone() {
+        let buffer = ScopeTestBuffers.makeFlatBuffer(code: 78)
+        let source = CIImage(cvPixelBuffer: buffer)
+        var fx = MonitorFrameEffects()
+        fx.zebra = true
+        fx.zebraHighlight = false
+        fx.zebraMidtone = true
+        fx.colorMode = .dLog2
+        fx.zebraMidtoneIRE = LiveZebra.midtoneIRE
+        let output = LiveMonitorCompositor.apply(to: source, effects: fx)
+        let context = CIContext(options: [.cacheIntermediates: false])
+        let delta = Self.maxChannelDelta(output: output, source: source, context: context)
+        XCTAssertLessThan(
+            delta, 0.04, "grey ≈ 26% is outside the default 55 ± 5 midtone stripe")
+    }
+
+    // MARK: - Pipeline coverage across live-like formats
+
+    func testHandleDecodedFramePublishesScopesFrom10BitOrIOSurface() async throws {
+        let buffer = try XCTUnwrap(
+            Self.makeLiveLikeBuffer(width: 64, height: 48),
+            "need a 10-bit / IOSurface / 420v buffer")
+        let bus = LiveFrameSampleBus()
+        let decoder = HevcDecoder()
+        var fx = MonitorFrameEffects()
+        fx.histogram = true
+        fx.waveform = true
+        decoder.attach(sampleBus: bus, effects: { fx }, transfer: { .dlog })
+        decoder.effects = fx
+
+        decoder.handleDecodedFrame(buffer, effects: fx, transfer: .dlog)
+
+        _ = await HostedCondition.wait {
+            bus.publishedScopes >= 1 && !bus.bundle.samples.points.isEmpty
+        }
+
+        XCTAssertGreaterThanOrEqual(bus.publishedScopes, 1)
+        XCTAssertFalse(bus.bundle.samples.points.isEmpty)
+        let occupied = bus.bundle.samples.histogramLuma.filter { $0 > 0 }.count
+        XCTAssertGreaterThan(occupied, 1, "live-like 10-bit/IOSurface tap must occupy bins")
+        XCTAssertGreaterThan(bus.bundle.samples.points.map(\.luma).max() ?? 0, 0)
+    }
+
+    func testHandleDecodedFramePublishesScopesFrom420v() async {
+        let bus = LiveFrameSampleBus()
+        let decoder = HevcDecoder()
+        var fx = MonitorFrameEffects()
+        fx.histogram = true
+        fx.waveform = true
+        decoder.attach(sampleBus: bus, effects: { fx }, transfer: { .dlog2 })
+        decoder.effects = fx
+
+        decoder.handleDecodedFrame(
+            ScopeTestBuffers.make420v(width: 64, height: 48, leftY: 48, rightY: 200),
+            effects: fx, transfer: .dlog2)
+
+        _ = await HostedCondition.wait {
+            bus.publishedScopes >= 1 && !bus.bundle.samples.points.isEmpty
+        }
+
+        XCTAssertGreaterThanOrEqual(
+            bus.publishedScopes, 1, "420v live/HEVC frames must publish a scope bundle")
+        XCTAssertFalse(
+            bus.bundle.samples.points.isEmpty, "WAVE needs scatter points from the 420v tap")
+        let occupied = bus.bundle.samples.histogramLuma.filter { $0 > 0 }.count
+        XCTAssertGreaterThan(occupied, 1, "edge frame must not collapse to a single bin")
+    }
+
+    // MARK: - Bake
+
+    func testBakeSizeKeepsSourceAspectAndClampsToDrawable() {
+        let fourK = MonitorFrameBaker.bakeSize(
+            source: CGSize(width: 3840, height: 2160),
+            drawable: CGSize(width: 1920, height: 1080))
+        XCTAssertEqual(fourK.width, 1920, accuracy: 1)
+        XCTAssertEqual(fourK.height, 1080, accuracy: 1)
+
+        let smaller = MonitorFrameBaker.bakeSize(
+            source: CGSize(width: 1280, height: 720),
+            drawable: CGSize(width: 1920, height: 1080))
+        XCTAssertEqual(smaller.width, 1280, accuracy: 1)
+        XCTAssertEqual(smaller.height, 720, accuracy: 1)
+    }
+
+    // MARK: - Helpers
+
+    /// Prefers legal-scaled 10-bit x420 (black → grey edge), falls back to
+    /// IOSurface BGRA, then 8-bit 420v.
+    private static func makeLiveLikeBuffer(width: Int, height: Int) -> CVPixelBuffer? {
+        func usable(_ buffer: CVPixelBuffer) -> CVPixelBuffer? {
+            ScopeSampler.copyBGRA(buffer, maxWidth: 200) == nil ? nil : buffer
+        }
+        if let ten = ScopeTestBuffers.makeX420(
+            width: width, height: height,
+            luma10: { x, _ in
+                x < width / 2 ? ScopeTestBuffers.dlog2Black10 : ScopeTestBuffers.dlog2Grey10
+            })
+        {
+            if let ten = usable(ten) { return ten }
+        }
+        let metal = ScopeTestBuffers.makeIOSurfaceBGRA(
+            width: width, height: height, left: 40, right: 210)
+        if metal.filled, let filled = usable(metal.buffer) { return filled }
+        return usable(
+            ScopeTestBuffers.make420v(width: width, height: height, leftY: 48, rightY: 200))
+    }
+
+    private static func maxChannelDelta(output: CIImage, source: CIImage, context: CIContext)
+        -> Float
+    {
+        let w = 80
+        let h = 40
+        func bytes(_ image: CIImage) -> [UInt8] {
+            var data = [UInt8](repeating: 0, count: w * h * 4)
+            let scaled = image.transformed(
+                by: CGAffineTransform(
+                    scaleX: CGFloat(w) / max(image.extent.width, 1),
+                    y: CGFloat(h) / max(image.extent.height, 1)))
+            context.render(
+                scaled, toBitmap: &data, rowBytes: w * 4,
+                bounds: CGRect(x: 0, y: 0, width: w, height: h),
+                format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+            return data
+        }
+        let a = bytes(output)
+        let b = bytes(source)
+        var best: Float = 0
+        for i in 0..<min(a.count, b.count) {
+            best = max(best, abs(Float(a[i]) - Float(b[i])) / 255)
+        }
+        return best
+    }
+
+    private static func maxRedDelta(output: CIImage, source: CIImage, context: CIContext) -> Float {
+        let w = 80
+        let h = 40
+        func bytes(_ image: CIImage) -> [UInt8] {
+            var data = [UInt8](repeating: 0, count: w * h * 4)
+            let scaled = image.transformed(
+                by: CGAffineTransform(
+                    scaleX: CGFloat(w) / max(image.extent.width, 1),
+                    y: CGFloat(h) / max(image.extent.height, 1)))
+            context.render(
+                scaled, toBitmap: &data, rowBytes: w * 4,
+                bounds: CGRect(x: 0, y: 0, width: w, height: h),
+                format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+            return data
+        }
+        let a = bytes(output)
+        let b = bytes(source)
+        var best: Float = 0
+        for i in stride(from: 0, to: a.count, by: 4) {
+            let dr = Float(a[i]) - Float(b[i])
+            best = max(best, dr / 255)
+        }
+        return best
+    }
+}
