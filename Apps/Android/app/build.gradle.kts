@@ -271,18 +271,20 @@ val downloadFootballModel =
     tasks.register("downloadFootballModel") {
         group = "build"
         description = "Fetch the football player-detection model into the generated assets."
+        // Alleen lokale waarden in doLast: de configuratiecache kan geen script-objecten serialiseren.
+        val url = footballModelUrl
         val target = footballAssetsDirectory.resolve("football/efficientdet_lite0.tflite")
         outputs.file(target)
-        inputs.property("url", footballModelUrl)
+        inputs.property("url", url)
         doLast {
             if (target.isFile && target.length() > 1_000_000) return@doLast
             target.parentFile.mkdirs()
             val local = System.getenv("FOOTBALL_MODEL_FILE")
             if (!local.isNullOrEmpty()) {
-                file(local).copyTo(target, overwrite = true)
+                File(local).copyTo(target, overwrite = true)
                 return@doLast
             }
-            URI(footballModelUrl).toURL().openStream().use { input ->
+            URI(url).toURL().openStream().use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
             }
             require(target.length() > 1_000_000) { "football model download looks truncated: ${target.length()} bytes" }
