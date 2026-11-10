@@ -15,7 +15,7 @@ permissions:
 jobs:
   apk:
     name: Debug APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Swift 6.3.3 toolchain is gebouwd voor 24.04 (libxml2.so.2); Ubuntu 26 heeft die niet meer
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
