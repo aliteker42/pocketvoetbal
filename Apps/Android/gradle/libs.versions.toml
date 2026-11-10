@@ -13,7 +13,7 @@ okhttp = "5.5.1"
 kyantBackdrop = "2.0.1"
 kyantShapes = "1.2.1"
 mlkitFaceDetection = "16.1.7"
-mediapipeTasksVision = "0.10.21"
+mediapipeTasksVision = "1.2.2"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
