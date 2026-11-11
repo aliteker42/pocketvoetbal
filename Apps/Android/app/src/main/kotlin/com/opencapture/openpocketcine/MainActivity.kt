@@ -78,6 +78,7 @@ open class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen().setKeepOnScreenCondition { !launch.firstFrameDrawn }
+        com.opencapture.openpocketcine.football.CrashLog.install(applicationContext)
         super.onCreate(savedInstanceState)
         // One model per task: a recreated activity keeps the session; finishing closes it.
         model = retainedMonitorRoot { createModel().also(AppModel::prepareStartup) }
@@ -92,6 +93,7 @@ open class MainActivity : ComponentActivity() {
                     LocalMonitorRemoteShutter provides remoteShutter) {
                     OpenPocketCineApp(model)
                     Overlay(model)
+                    com.opencapture.openpocketcine.football.CrashBanner()
                     MonitorOperatorDeliveryChrome(delivery, PocketMediaShare, { MediaHTTP.playbackMIMEType(it.name) })
                 }
             }

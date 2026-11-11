@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Eén detectie tegelijk op een eigen thread; een beeld dat binnenkomt terwijl de vorige nog loopt,
  * wordt overgeslagen (het nieuwste beeld telt, niet een wachtrij).
  */
-class PlayerDetector(private val context: Context) {
+class PlayerDetector(private val context: Context, private val preferGpu: Boolean = false) {
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "football-detector") }
     private val busy = AtomicBoolean(false)
     private var detector: ObjectDetector? = null
@@ -101,8 +101,10 @@ class PlayerDetector(private val context: Context) {
     private fun ensureDetector(): ObjectDetector? {
         detector?.let { return it }
         if (initFailed) return null
-        // GPU eerst (S25 Ultra: ~15–25 ms), anders CPU.
-        for (delegate in listOf(Delegate.GPU, Delegate.CPU)) {
+        // Standaard CPU (XNNPACK, ~30–50 ms op een snelle telefoon, stabiel). GPU alleen op verzoek:
+        // de GPU-delegate kan op sommige toestellen native crashen, en dat is niet op te vangen.
+        val delegates = if (preferGpu) listOf(Delegate.GPU, Delegate.CPU) else listOf(Delegate.CPU)
+        for (delegate in delegates) {
             try {
                 val options =
                     ObjectDetector.ObjectDetectorOptions.builder()

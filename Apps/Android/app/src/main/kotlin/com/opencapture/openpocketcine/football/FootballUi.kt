@@ -83,6 +83,37 @@ fun FootballOverlay(tracker: FootballTracker, mirrored: Boolean, modifier: Modif
     }
 }
 
+/**
+ * Banner na een crash: de app is de vorige keer onverwacht gestopt; deel het logboek of sluit.
+ * Staat boven alles in de activity zodat hij ook verschijnt als de app vóór het live-beeld crasht.
+ */
+@Composable
+fun CrashBanner(modifier: Modifier = Modifier) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var last by remember { mutableStateOf(CrashLog.lastCrashDescription(context)) }
+    val when_ = last ?: return
+    Column(
+        modifier
+            .statusBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 48.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xE6B71C1C))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("De app is gecrasht ($when_)", color = Color.White, fontWeight = FontWeight.SemiBold)
+        Text("Deel het logboek zodat de oorzaak gevonden kan worden.", color = Color.White, fontSize = 13.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = { CrashLog.share(context) }, colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color(0xFFB71C1C))) {
+                Text("Logboek delen")
+            }
+            Button(onClick = { CrashLog.clear(context); last = null }, colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF))) {
+                Text("Sluiten")
+            }
+        }
+    }
+}
+
 /** De ⚽-knop boven in beeld met status; tikken opent de instellingen en Start/Stop. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -175,6 +206,11 @@ private fun FootballSheet(tracker: FootballTracker, onClose: () -> Unit) {
         Section("Overig") {
             ToggleRow("Opname starten/stoppen met Start/Stop", s.recordWithTracking) { change(s.copy(recordWithTracking = it)) }
             ToggleRow("Herkenning over het beeld tekenen", s.showOverlay) { change(s.copy(showOverlay = it)) }
+            ToggleRow("GPU-versnelling detector (experimenteel)", s.gpuDetector) { change(s.copy(gpuDetector = it)) }
+            val context = androidx.compose.ui.platform.LocalContext.current
+            Button(onClick = { CrashLog.share(context) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F))) {
+                Text("Logboek / crashlog delen")
+            }
         }
     }
 }

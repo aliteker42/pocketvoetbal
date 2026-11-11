@@ -20,6 +20,7 @@ object FootballSettingsStore {
             maxZoom = p.getFloat("maxZoom", 3f).toDouble(),
             recordWithTracking = p.getBoolean("recordWithTracking", true),
             showOverlay = p.getBoolean("showOverlay", true),
+            gpuDetector = p.getBoolean("gpuDetector", false),
         )
     }
 
@@ -33,6 +34,7 @@ object FootballSettingsStore {
             putFloat("maxZoom", s.maxZoom.toFloat())
             putBoolean("recordWithTracking", s.recordWithTracking)
             putBoolean("showOverlay", s.showOverlay)
+            putBoolean("gpuDetector", s.gpuDetector)
         }
     }
 }

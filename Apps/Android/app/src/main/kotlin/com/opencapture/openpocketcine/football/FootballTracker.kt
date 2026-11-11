@@ -52,6 +52,7 @@ class FootballTracker(
         private set
 
     private var detector: PlayerDetector? = null
+    private var detectorGpu = false
     private var finder: PlayFinder? = null
     private var director: CameraDirector? = null
     private var tickJob: Job? = null
@@ -88,7 +89,12 @@ class FootballTracker(
     fun toggle() = if (_active.value) stop() else start()
 
     private fun startInternal(startRecording: Boolean) {
-        val det = detector ?: PlayerDetector(context).also { detector = it }
+        if (detector != null && detectorGpu != settings.gpuDetector) {
+            detector?.close()
+            detector = null
+        }
+        detectorGpu = settings.gpuDetector
+        val det = detector ?: PlayerDetector(context, preferGpu = settings.gpuDetector).also { detector = it }
         val profile = settings.profile
         finder = PlayFinder(profile)
         val dir = CameraDirector(settings)
@@ -165,6 +171,16 @@ class FootballTracker(
     // ---- Regel-tik ----------------------------------------------------------------------------
 
     private fun tick() {
+        try {
+            tickUnsafe()
+        } catch (t: Throwable) {
+            // Een fout in de regel-tik mag de app nooit meenemen; melden en doorgaan.
+            android.util.Log.w("FootballTracker", "tik mislukt", t)
+            _state.value = _state.value.copy(lastActionLabel = "Fout: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    private fun tickUnsafe() {
         val dir = director ?: return
         val now = nowSeconds()
         val camera = cameraObservation()
@@ -214,6 +230,17 @@ class FootballTracker(
         if (actions.isEmpty()) return
         val s = session
         for (a in actions) {
+            try {
+                applyOne(s, a)
+            } catch (t: Throwable) {
+                android.util.Log.w("FootballTracker", "actie $a mislukt", t)
+                note("Fout bij $a: ${t.message}")
+            }
+        }
+    }
+
+    private fun applyOne(s: PocketCameraSession, a: DirectorAction) {
+        run {
             when (a) {
                 is DirectorAction.Track -> {
                     s.startTracking(TrackingBox.fromCenter(a.cx, a.cy, a.w, a.h))
