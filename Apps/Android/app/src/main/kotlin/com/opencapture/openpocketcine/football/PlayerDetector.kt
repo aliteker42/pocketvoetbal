@@ -20,7 +20,17 @@ import java.util.concurrent.atomic.AtomicBoolean
  * wordt overgeslagen (het nieuwste beeld telt, niet een wachtrij).
  */
 class PlayerDetector(private val context: Context, private val preferGpu: Boolean = false) {
-    private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "football-detector") }
+    /** Minimale tussentijd tussen detecties; instelbaar vanuit het paneel. */
+    @Volatile var minIntervalMs: Long = MIN_INTERVAL_MS
+    // Eén achtergrondthread met lage prioriteit: de HEVC-decoder en de Vulkan-weergave van het
+    // live-beeld moeten altijd voorgaan, anders hapert het beeld.
+    private val executor =
+        Executors.newSingleThreadExecutor { r ->
+            Thread({
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                r.run()
+            }, "football-detector")
+        }
     private val busy = AtomicBoolean(false)
     private var detector: ObjectDetector? = null
     private var initFailed = false
@@ -32,11 +42,17 @@ class PlayerDetector(private val context: Context, private val preferGpu: Boolea
     @Volatile var error: String? = null
         private set
 
-    /** Of een nieuw beeld nu zin heeft: detector vrij en de minimale tussentijd voorbij. */
+    /**
+     * Of een nieuw beeld nu zin heeft: detector vrij en de tussentijd voorbij. De tussentijd past
+     * zich aan de gemeten rekentijd aan, zodat de detector hoogstens ~⅓ van de tijd bezig is en
+     * het uitlezen van het beeld (een GPU→CPU-kopie die de weergave even stilzet) niet vaker dan
+     * nodig gebeurt.
+     */
     fun wantsFrame(): Boolean {
         if (initFailed) return false
         if (busy.get()) return false
-        return SystemClock.elapsedRealtime() - lastStartedAt >= MIN_INTERVAL_MS
+        val interval = maxOf(minIntervalMs, lastLatencyMs * 3)
+        return SystemClock.elapsedRealtime() - lastStartedAt >= interval
     }
 
     /**
@@ -140,7 +156,7 @@ class PlayerDetector(private val context: Context, private val preferGpu: Boolea
     companion object {
         private const val TAG = "FootballDetector"
         const val MODEL_ASSET = "football/efficientdet_lite0.tflite"
-        const val MIN_INTERVAL_MS = 90L
+        const val MIN_INTERVAL_MS = 160L
         const val SCORE_THRESHOLD = 0.28f
         const val MAX_RESULTS = 24
 

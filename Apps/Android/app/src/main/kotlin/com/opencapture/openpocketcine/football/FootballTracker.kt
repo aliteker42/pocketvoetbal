@@ -95,6 +95,7 @@ class FootballTracker(
         }
         detectorGpu = settings.gpuDetector
         val det = detector ?: PlayerDetector(context, preferGpu = settings.gpuDetector).also { detector = it }
+        det.minIntervalMs = settings.detectionIntervalMs.toLong()
         val profile = settings.profile
         finder = PlayFinder(profile)
         val dir = CameraDirector(settings)

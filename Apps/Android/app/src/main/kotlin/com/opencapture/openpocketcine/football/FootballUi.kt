@@ -206,6 +206,10 @@ private fun FootballSheet(tracker: FootballTracker, onClose: () -> Unit) {
         Section("Overig") {
             ToggleRow("Opname starten/stoppen met Start/Stop", s.recordWithTracking) { change(s.copy(recordWithTracking = it)) }
             ToggleRow("Herkenning over het beeld tekenen", s.showOverlay) { change(s.copy(showOverlay = it)) }
+            Text("Herkenningstempo (lager = soepeler live-beeld)", style = MaterialTheme.typography.bodyMedium)
+            ChipRow(listOf(330, 160, 100), s.detectionIntervalMs, { when (it) { 330 -> "Zuinig 3/s"; 160 -> "Normaal 6/s"; else -> "Snel 10/s" } }) {
+                change(s.copy(detectionIntervalMs = it))
+            }
             ToggleRow("GPU-versnelling detector (experimenteel)", s.gpuDetector) { change(s.copy(gpuDetector = it)) }
             val context = androidx.compose.ui.platform.LocalContext.current
             Button(onClick = { CrashLog.share(context) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F))) {

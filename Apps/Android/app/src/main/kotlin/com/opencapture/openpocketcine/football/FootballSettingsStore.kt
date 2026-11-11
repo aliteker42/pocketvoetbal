@@ -21,6 +21,7 @@ object FootballSettingsStore {
             recordWithTracking = p.getBoolean("recordWithTracking", true),
             showOverlay = p.getBoolean("showOverlay", true),
             gpuDetector = p.getBoolean("gpuDetector", false),
+            detectionIntervalMs = p.getInt("detectionIntervalMs", 160),
         )
     }
 
@@ -35,6 +36,7 @@ object FootballSettingsStore {
             putBoolean("recordWithTracking", s.recordWithTracking)
             putBoolean("showOverlay", s.showOverlay)
             putBoolean("gpuDetector", s.gpuDetector)
+            putInt("detectionIntervalMs", s.detectionIntervalMs)
         }
     }
 }

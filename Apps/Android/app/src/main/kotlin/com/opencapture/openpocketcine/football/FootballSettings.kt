@@ -44,6 +44,8 @@ data class FootballSettings(
     val showOverlay: Boolean = true,
     /** Detector op de GPU draaien (sneller, maar op sommige toestellen instabiel). Standaard CPU. */
     val gpuDetector: Boolean = false,
+    /** Minimale tijd tussen twee detecties (ms). Hoger = soepeler live-beeld, trager reageren. */
+    val detectionIntervalMs: Int = 160,
 ) {
     /** Afgeleide stuurparameters voor sport + positie. */
     val profile: FootballProfile get() = FootballProfile.of(this)
