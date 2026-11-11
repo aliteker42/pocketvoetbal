@@ -78,6 +78,7 @@ open class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen().setKeepOnScreenCondition { !launch.firstFrameDrawn }
+        com.opencapture.openpocketcine.football.CrashLog.noteVersion(applicationContext)
         com.opencapture.openpocketcine.football.CrashLog.install(applicationContext)
         super.onCreate(savedInstanceState)
         // One model per task: a recreated activity keeps the session; finishing closes it.

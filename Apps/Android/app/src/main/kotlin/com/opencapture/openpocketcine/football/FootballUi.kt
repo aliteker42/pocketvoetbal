@@ -102,7 +102,11 @@ fun CrashBanner(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text("De app is gecrasht ($when_)", color = Color.White, fontWeight = FontWeight.SemiBold)
-        Text("Deel het logboek zodat de oorzaak gevonden kan worden.", color = Color.White, fontSize = 13.sp)
+        Text(
+            "Het rapport staat al in Mijn bestanden → Downloads → PocketVoetbal" +
+                (CrashLog.lastReportName?.let { " ($it)" } ?: "") + ". Je kunt het ook direct delen.",
+            color = Color.White, fontSize = 13.sp,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = { CrashLog.share(context) }, colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color(0xFFB71C1C))) {
                 Text("Logboek delen")

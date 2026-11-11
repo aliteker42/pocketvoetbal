@@ -113,6 +113,7 @@ class FootballTracker(
             runCatching { session.control.request(CameraCommandIntent.StartRecording) }
             startedRecording = true
         }
+        FootballLog.beginSession(context)
         FootballLog.add("START ${settings.sport} ${settings.position} ${settings.steering} autoZoom=${settings.autoZoom} max=${settings.maxZoom} interval=${settings.detectionIntervalMs}ms gpu=${settings.gpuDetector}")
         _state.value =
             FootballState(
@@ -140,6 +141,7 @@ class FootballTracker(
         }
         _active.value = false
         FootballLog.add("STOP (detector ${detector?.delegateLabel} ${detector?.lastLatencyMs}ms, fout=${detector?.error})")
+        FootballLog.flush()
         _state.value = FootballState(active = false, lastActionLabel = "Gestopt")
     }
 
