@@ -45,13 +45,6 @@ jobs:
         env:
           SWIFT_ANDROID_SDK_ID: swift-6.3.3-RELEASE_android
         run: ./gradlew :app:assembleDebug
-      - name: Upload APK
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: OpenPocketCine-voetbal-debug-apk
-          path: Apps/Android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          retention-days: 30
       - name: Publiceer als release "latest" (vaste downloadlink)
         if: github.event_name != 'pull_request'
         env:
@@ -63,3 +56,11 @@ jobs:
           gh release create latest PocketVoetbal.apk -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "PocketVoetbal — nieuwste build" \
             --notes "Automatisch gebouwd uit commit ${GITHUB_SHA::7}. Download: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/PocketVoetbal.apk"
+      - name: Upload APK
+        continue-on-error: true # de artefact-opslag hapert soms; de release hieronder is de echte uitgang
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: OpenPocketCine-voetbal-debug-apk
+          path: Apps/Android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
