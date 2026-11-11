@@ -82,6 +82,9 @@ object CrashLog {
             sb.appendLine("--- Geen opgevangen Kotlin/Java-crash (mogelijk native of door het systeem gestopt) ---")
             sb.appendLine()
         }
+        sb.appendLine("--- voetbal-modus logboek ---")
+        sb.appendLine(FootballLog.dump().takeLast(30_000))
+        sb.appendLine()
         sb.appendLine("--- logcat crashbuffer ---")
         sb.appendLine(logcat("-b", "crash", "-d", "-t", "200").take(20_000))
         sb.appendLine()

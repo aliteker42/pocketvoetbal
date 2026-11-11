@@ -145,9 +145,11 @@ class CameraDirector(private val settings: FootballSettings) {
                 if (settings.autoZoom) autoZoom(play, camera, now, actions)
             }
             else -> {
-                // Even niets gezien: niets overhaasten. Bij APP_STEER wel de stick loslaten.
+                // Even niets gezien (een gemiste detectie, een traag beeld): niets overhaasten. Bij
+                // APP_STEER de huidige beweging nog even door laten lopen; pas na een korte tijd
+                // de stick loslaten. Anders wordt elke hik in de detectie een hik in de gimbal.
                 if (mode != DirectorMode.LOST) mode = DirectorMode.SEARCHING
-                if (settings.steering == Steering.APP_STEER) releaseStick(actions)
+                if (settings.steering == Steering.APP_STEER && lostFor >= COAST_SECONDS) releaseStick(actions)
             }
         }
         return actions
@@ -368,6 +370,8 @@ class CameraDirector(private val settings: FootballSettings) {
         const val WIDE_EXTENT = 0.85
         const val CENTERED_BAND = 0.15
         const val HOME_TOLERANCE_DEG = 8.0
+        /** Zo lang rijdt de gimbal door op de laatste stick als de detectie even niets geeft. */
+        const val COAST_SECONDS = 1.0
         const val HOME_MAX_RATE = 25.0
         /** P-versterking in 1/s: een fout van 10° wordt met 15°/s ingelopen (tijdconstante ~0,7 s). */
         const val STEER_KP = 1.5

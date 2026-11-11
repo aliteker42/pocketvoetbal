@@ -93,7 +93,7 @@ data class FootballProfile(
                     Sport.ZAAL ->
                         FootballProfile(
                             defaultZoom = minOf(1.5, s.maxZoom), lostZoom = 1.0, clusterRadius = 0.30,
-                            retargetDistance = 0.20, retargetHoldSeconds = 0.7, retargetMinIntervalSeconds = 1.5,
+                            retargetDistance = 0.22, retargetHoldSeconds = 1.0, retargetMinIntervalSeconds = 2.5,
                             lostAfterSeconds = 2.5, steerDeadband = 0.07, steerGain = 1.6, steerMax = 0.85,
                             targetY = 0.50, panLimitLeftDeg = 80.0, panLimitRightDeg = 80.0,
                             zoomOutWhenTallerThan = 0.60, zoomInWhenShorterThan = 0.18,
@@ -101,7 +101,7 @@ data class FootballProfile(
                     Sport.VELD ->
                         FootballProfile(
                             defaultZoom = minOf(3.0, s.maxZoom), lostZoom = minOf(2.0, s.maxZoom), clusterRadius = 0.22,
-                            retargetDistance = 0.24, retargetHoldSeconds = 0.9, retargetMinIntervalSeconds = 2.0,
+                            retargetDistance = 0.26, retargetHoldSeconds = 1.2, retargetMinIntervalSeconds = 3.5,
                             lostAfterSeconds = 3.5, steerDeadband = 0.08, steerGain = 1.2, steerMax = 0.65,
                             targetY = 0.48, panLimitLeftDeg = 85.0, panLimitRightDeg = 85.0,
                             zoomOutWhenTallerThan = 0.50, zoomInWhenShorterThan = 0.13,

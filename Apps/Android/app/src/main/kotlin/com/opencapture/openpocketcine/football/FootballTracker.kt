@@ -60,6 +60,8 @@ class FootballTracker(
     @Volatile private var latestObservation: SceneObservation? = null
     private var lastStick: Pair<Double, Double>? = null
     private var lastStickSentAt = 0L
+    private var lastTickLogAt = 0.0
+    private var lastLoggedTracking: Boolean? = null
     private var framesSeen = 0L
 
     private val session get() = sessionOwner()
@@ -111,6 +113,7 @@ class FootballTracker(
             runCatching { session.control.request(CameraCommandIntent.StartRecording) }
             startedRecording = true
         }
+        FootballLog.add("START ${settings.sport} ${settings.position} ${settings.steering} autoZoom=${settings.autoZoom} max=${settings.maxZoom} interval=${settings.detectionIntervalMs}ms gpu=${settings.gpuDetector}")
         _state.value =
             FootballState(
                 active = true, mode = dir.mode, detectorLabel = det.delegateLabel, recordingStartedByUs = startedRecording,
@@ -136,6 +139,7 @@ class FootballTracker(
             runCatching { session.control.request(CameraCommandIntent.StopRecording) }
         }
         _active.value = false
+        FootballLog.add("STOP (detector ${detector?.delegateLabel} ${detector?.lastLatencyMs}ms, fout=${detector?.error})")
         _state.value = FootballState(active = false, lastActionLabel = "Gestopt")
     }
 
@@ -187,9 +191,26 @@ class FootballTracker(
         val camera = cameraObservation()
         val play = latestPlay ?: PlayEstimate(0.5, 0.5, 0.0, null, 0.0, 0, false, 0.0)
         // Een oude schatting (detector stil) telt als "niets gezien".
-        val stale = latestObservation?.let { now - it.timeSeconds > STALE_SECONDS } ?: true
+        // "Oud" hangt af van het detectietempo: bij 3/s is 1,5 s zonder nieuw beeld normaal.
+        val staleAfter = maxOf(STALE_SECONDS, 4.0 * settings.detectionIntervalMs / 1000.0, 3.0 * (detector?.lastLatencyMs ?: 0L) / 1000.0)
+        val stale = latestObservation?.let { now - it.timeSeconds > staleAfter } ?: true
         val effective = if (stale) play.copy(confidence = 0.0, anchor = null, playerCount = 0) else play
-        apply(dir.tick(effective, camera, now))
+        val actions = dir.tick(effective, camera, now)
+        apply(actions)
+        if (camera.isTracking != lastLoggedTracking) {
+            lastLoggedTracking = camera.isTracking
+            FootballLog.add("CAMERA tracking=${camera.isTracking} subject=${camera.subjectX?.let { "%.2f".format(it) }}")
+        }
+        if (now - lastTickLogAt >= 1.0) {
+            lastTickLogAt = now
+            FootballLog.add(
+                "TIK mode=${dir.mode} spelers=${effective.playerCount} bal=${effective.ballSeen} spel=%.2f,%.2f zeker=%.2f oud=%s ".format(
+                    effective.x, effective.y, effective.confidence, stale,
+                ) + "yaw=${camera.yawDeg?.let { "%.0f".format(it) }} zoom=%.1f det=%dms frames=%d stick=%s".format(
+                    camera.zoom, detector?.lastLatencyMs ?: 0, framesSeen, lastStick?.let { "%.2f,%.2f".format(it.first, it.second) },
+                ),
+            )
+        }
         // Stick-waarde af en toe herhalen zodat de verbinding hem niet als losgelaten ziet.
         lastStick?.let { (x, y) ->
             if (SystemClock.elapsedRealtime() - lastStickSentAt > STICK_REFRESH_MS) sendStick(x, y)
@@ -274,13 +295,14 @@ class FootballTracker(
 
     private fun note(label: String) {
         _state.value = _state.value.copy(lastActionLabel = label)
+        FootballLog.add("ACTIE $label")
     }
 
     private fun nowSeconds() = SystemClock.elapsedRealtime() / 1000.0
 
     companion object {
         const val TICK_MS = 100L
-        const val STALE_SECONDS = 0.8
+        const val STALE_SECONDS = 1.2
         const val STICK_REFRESH_MS = 300L
     }
 }
