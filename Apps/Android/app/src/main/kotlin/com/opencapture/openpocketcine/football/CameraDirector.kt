@@ -67,6 +67,8 @@ class CameraDirector(private val settings: FootballSettings) {
     private var centeredSince: Double? = null
     private var lastZoomAt = Double.NEGATIVE_INFINITY
     private var zoomedOutForLost = false
+    /** De zoom die wíj het laatst gevraagd hebben; de camera meldt soms iets anders en daar reageren we niet op. */
+    private var commandedZoom: Double? = null
     private var trackRequestedAt = Double.NEGATIVE_INFINITY
 
     // Leren van de assen (APP_STEER en terug-naar-thuis).
@@ -96,6 +98,7 @@ class CameraDirector(private val settings: FootballSettings) {
         lastPitch = camera.pitchDeg
         val actions = mutableListOf<DirectorAction>()
         val startZoom = nearestStop(profile.defaultZoom, allowedStops(camera.zoomStops))
+        commandedZoom = startZoom
         if (abs(startZoom - camera.zoom) > 0.05) {
             actions += DirectorAction.Zoom(startZoom)
             lastZoomAt = now
@@ -170,7 +173,10 @@ class CameraDirector(private val settings: FootballSettings) {
         }
         releaseStick(actions)
 
-        val requestPending = now - trackRequestedAt < TRACK_SETTLE_SECONDS
+        // De app meldt "tracking uit" al na 0,35 s zonder bericht van de camera, terwijl de Pocket
+        // vaak gewoon doorvolgt. Daarom na een opdracht een respijt waarin we de camera vertrouwen
+        // en níet opnieuw een kader sturen (elke herstart = een schok in het beeld).
+        val requestPending = now - trackRequestedAt < TRACK_GRACE_SECONDS
         if (!camera.isTracking) {
             if (!requestPending && now - lastRetargetAt >= RETRY_TRACK_SECONDS) {
                 actions += trackAction(anchor)
@@ -261,11 +267,12 @@ class CameraDirector(private val settings: FootballSettings) {
         if (camera.isTracking) actions += DirectorAction.CancelTrack
         if (!zoomedOutForLost) {
             val target = nearestStop(profile.lostZoom, allowedStops(camera.zoomStops))
-            if (target < camera.zoom - 0.05) {
+            val ours = commandedZoom ?: camera.zoom
+            if (target < ours - 0.05) {
                 actions += DirectorAction.Zoom(target)
                 lastZoomAt = now
+                zoomedOutForLost = true
             }
-            zoomedOutForLost = true
         }
         // Rustig terug naar de startrichting (midden van het veld).
         val yaw = camera.yawDeg
@@ -286,13 +293,9 @@ class CameraDirector(private val settings: FootballSettings) {
         val seenFor = seenSince?.let { now - it } ?: 0.0
         if (seenFor < 1.0) return
         zoomedOutForLost = false
-        if (!settings.autoZoom) {
-            val target = nearestStop(profile.defaultZoom, allowedStops(camera.zoomStops))
-            if (abs(target - camera.zoom) > 0.05) {
-                actions += DirectorAction.Zoom(target)
-                lastZoomAt = now
-            }
-        }
+        val target = commandedZoom ?: nearestStop(profile.defaultZoom, allowedStops(camera.zoomStops))
+        actions += DirectorAction.Zoom(target)
+        lastZoomAt = now
     }
 
     // ---- Zoom ---------------------------------------------------------------------------------
@@ -302,7 +305,7 @@ class CameraDirector(private val settings: FootballSettings) {
         if (centered) { if (centeredSince == null) centeredSince = now } else centeredSince = null
         if (now - lastZoomAt < ZOOM_MIN_INTERVAL_SECONDS) return
         val stops = allowedStops(camera.zoomStops)
-        val current = nearestStop(camera.zoom, stops)
+        val current = nearestStop(commandedZoom ?: camera.zoom, stops)
         val idx = stops.indexOf(current)
         val tall = play.anchor?.h ?: 0.0
         val target =
@@ -317,7 +320,8 @@ class CameraDirector(private val settings: FootballSettings) {
                     play.extentX * (stops[idx + 1] / current) < ZOOM_IN_FIT -> stops[idx + 1]
                 else -> return
             }
-        if (abs(target - camera.zoom) < 0.05) return
+        if (abs(target - current) < 0.05) return
+        commandedZoom = target
         actions += DirectorAction.Zoom(target)
         lastZoomAt = now
         centeredSince = null
@@ -362,8 +366,8 @@ class CameraDirector(private val settings: FootballSettings) {
 
     companion object {
         const val MIN_TRACK_SIDE = 0.11
-        const val TRACK_SETTLE_SECONDS = 1.5
-        const val RETRY_TRACK_SECONDS = 2.0
+        const val TRACK_GRACE_SECONDS = 6.0
+        const val RETRY_TRACK_SECONDS = 3.0
         const val ZOOM_MIN_INTERVAL_SECONDS = 4.0
         const val ZOOM_IN_STABLE_SECONDS = 3.0
         const val ZOOM_IN_FIT = 0.70

@@ -151,6 +151,17 @@ class FootballTracker(
         detector = null
     }
 
+    /** Model alvast laden (bij openen van het paneel) zodat START direct beelden ziet. */
+    fun warmUp() {
+        if (detector != null && detectorGpu != settings.gpuDetector) {
+            detector?.close()
+            detector = null
+        }
+        detectorGpu = settings.gpuDetector
+        val det = detector ?: PlayerDetector(context, preferGpu = settings.gpuDetector).also { detector = it }
+        det.warmUp()
+    }
+
     // ---- Beelden ------------------------------------------------------------------------------
 
     /** Of het live-pad nu een beeld moet uitlezen voor ons. */
@@ -201,7 +212,7 @@ class FootballTracker(
         apply(actions)
         if (camera.isTracking != lastLoggedTracking) {
             lastLoggedTracking = camera.isTracking
-            FootballLog.add("CAMERA tracking=${camera.isTracking} subject=${camera.subjectX?.let { "%.2f".format(it) }}")
+            FootballLog.add("CAMERA tracking=${camera.isTracking} overlay=${session.trackingHud.value.overlay?.let { it::class.simpleName }} subject=${camera.subjectX?.let { "%.2f".format(it) }}")
         }
         if (now - lastTickLogAt >= 1.0) {
             lastTickLogAt = now

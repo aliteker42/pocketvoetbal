@@ -26,10 +26,7 @@ class PlayerDetector(private val context: Context, private val preferGpu: Boolea
     // live-beeld moeten altijd voorgaan, anders hapert het beeld.
     private val executor =
         Executors.newSingleThreadExecutor { r ->
-            Thread({
-                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
-                r.run()
-            }, "football-detector")
+            Thread(r, "football-detector")
         }
     private val busy = AtomicBoolean(false)
     private var detector: ObjectDetector? = null
@@ -41,6 +38,19 @@ class PlayerDetector(private val context: Context, private val preferGpu: Boolea
         private set
     @Volatile var error: String? = null
         private set
+
+    /** Laad het model alvast (bij het openen van het paneel), zodat START niet 10 s stil is. */
+    fun warmUp() {
+        if (detector != null || initFailed) return
+        if (!busy.compareAndSet(false, true)) return
+        executor.execute {
+            try {
+                ensureDetector()
+            } finally {
+                busy.set(false)
+            }
+        }
+    }
 
     /**
      * Of een nieuw beeld nu zin heeft: detector vrij en de tussentijd voorbij. De tussentijd past
@@ -130,11 +140,14 @@ class PlayerDetector(private val context: Context, private val preferGpu: Boolea
                         .setRunningMode(RunningMode.IMAGE)
                         .setScoreThreshold(SCORE_THRESHOLD)
                         .setMaxResults(MAX_RESULTS)
-                        .setCategoryAllowlist(listOf("person", "sports ball"))
+                        // Géén categorie-allowlist: de GPU-variant van MediaPipe's
+                        // TensorsToDetections breekt daar hard op af ("2 vs. 90"). We filteren zelf op naam.
                         .build()
                 val d = ObjectDetector.createFromOptions(context, options)
                 detector = d
                 delegateLabel = delegate.name
+                // Pas ná het laden omlaag: het laden zelf mag even de volle CPU hebben.
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
                 return d
             } catch (t: Throwable) {
                 Log.w(TAG, "detector init ($delegate) mislukt", t)

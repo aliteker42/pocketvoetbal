@@ -16,11 +16,11 @@ object FootballSettingsStore {
             position = enum("position", CameraPosition.values(), CameraPosition.MIDDENLIJN),
             pitchSide = enum("pitchSide", PitchSide.values(), PitchSide.LINKS),
             steering = enum("steering", Steering.values(), Steering.CAMERA_TRACK),
-            autoZoom = p.getBoolean("autoZoom", true),
+            autoZoom = p.getBoolean("autoZoom", false),
             maxZoom = p.getFloat("maxZoom", 3f).toDouble(),
             recordWithTracking = p.getBoolean("recordWithTracking", true),
             showOverlay = p.getBoolean("showOverlay", true),
-            gpuDetector = p.getBoolean("gpuDetector", false),
+            gpuDetector = p.getBoolean("gpuDetector", true),
             detectionIntervalMs = p.getInt("detectionIntervalMs", 160),
         )
     }

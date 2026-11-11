@@ -35,15 +35,15 @@ data class FootballSettings(
     val position: CameraPosition = CameraPosition.MIDDENLIJN,
     val pitchSide: PitchSide = PitchSide.LINKS,
     val steering: Steering = Steering.CAMERA_TRACK,
-    val autoZoom: Boolean = true,
+    val autoZoom: Boolean = false,
     /** Maximale zoomfactor die de app mag kiezen. */
     val maxZoom: Double = 3.0,
     /** Opname automatisch starten bij Start en stoppen bij Stop. */
     val recordWithTracking: Boolean = true,
     /** Herkende spelers en het spelpunt over het live-beeld tekenen. */
     val showOverlay: Boolean = true,
-    /** Detector op de GPU draaien (sneller, maar op sommige toestellen instabiel). Standaard CPU. */
-    val gpuDetector: Boolean = false,
+    /** Detector op de GPU (ontlast de CPU; het live-beeld blijft soepel). CPU als terugval. */
+    val gpuDetector: Boolean = true,
     /** Minimale tijd tussen twee detecties (ms). Hoger = soepeler live-beeld, trager reageren. */
     val detectionIntervalMs: Int = 160,
 ) {
@@ -92,7 +92,7 @@ data class FootballProfile(
                 when (s.sport) {
                     Sport.ZAAL ->
                         FootballProfile(
-                            defaultZoom = minOf(1.5, s.maxZoom), lostZoom = 1.0, clusterRadius = 0.30,
+                            defaultZoom = 1.0, lostZoom = 1.0, clusterRadius = 0.30,
                             retargetDistance = 0.22, retargetHoldSeconds = 1.0, retargetMinIntervalSeconds = 2.5,
                             lostAfterSeconds = 2.5, steerDeadband = 0.07, steerGain = 1.6, steerMax = 0.85,
                             targetY = 0.50, panLimitLeftDeg = 80.0, panLimitRightDeg = 80.0,

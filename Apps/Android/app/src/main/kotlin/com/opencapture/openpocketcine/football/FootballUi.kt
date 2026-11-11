@@ -142,6 +142,7 @@ fun FootballControls(tracker: FootballTracker, modifier: Modifier = Modifier) {
         Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
     if (sheetOpen) {
+        androidx.compose.runtime.LaunchedEffect(Unit) { tracker.warmUp() }
         ModalBottomSheet(onDismissRequest = { sheetOpen = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
             FootballSheet(tracker, onClose = { sheetOpen = false })
         }
