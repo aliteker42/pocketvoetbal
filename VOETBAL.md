@@ -42,7 +42,8 @@ scherm mag aan blijven. Zet "schakel naar mobiele data" / adaptieve Wi‑Fi op d
 
 ## Bouwen
 
-De APK komt uit GitHub Actions (`.github/workflows/voetbal-apk.yml`): push naar `main` of
+De APK komt uit GitHub Actions (`.github/workflows/voetbal-apk.yml`). Vaste downloadlink van de nieuwste build:
+**https://github.com/aliteker42/pocketvoetbal/releases/latest/download/PocketVoetbal.apk** — bij elke push naar `main` of
 `voetbal`, of start "Voetbal APK" handmatig. Na ~30 minuten staat `app-debug.apk` als artefact bij
 de run (Actions → run → Artifacts). Installeren op de telefoon via "onbekende bronnen".
 

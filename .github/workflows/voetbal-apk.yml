@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write # voor de 'latest'-release met de APK
 
 jobs:
   apk:
@@ -52,3 +52,14 @@ jobs:
           path: Apps/Android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
+      - name: Publiceer als release "latest" (vaste downloadlink)
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp Apps/Android/app/build/outputs/apk/debug/app-debug.apk PocketVoetbal.apk
+          gh release delete latest --cleanup-tag -y -R "$GITHUB_REPOSITORY" || true
+          gh release create latest PocketVoetbal.apk -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "PocketVoetbal — nieuwste build" \
+            --notes "Automatisch gebouwd uit commit ${GITHUB_SHA::7}. Download: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/PocketVoetbal.apk"
