@@ -15,7 +15,15 @@ permissions:
 jobs:
   apk:
     name: Debug APK
-    runs-on: ubuntu-24.04 # Swift 6.3.3 toolchain is gebouwd voor 24.04 (libxml2.so.2); Ubuntu 26 heeft die niet meer
+    # Twee runner-pools tegelijk: de 24.04-pool is 's avonds soms lang bezet. Op Ubuntu 26 mist de
+    # voorgeïnstalleerde Swift-toolchain (gebouwd voor 24.04) libxml2.so.2; een symlink naar de
+    # nieuwe libxml2 vangt dat op. Wie het eerst klaar is publiceert de release; de ander
+    # overschrijft met dezelfde code.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,6 +41,18 @@ jobs:
         with:
           ndk-version: r27c
           link-to-sdk: true
+      - name: libxml2.so.2 voor de Swift-toolchain (Ubuntu 26)
+        if: matrix.runner == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          if ! ldconfig -p | grep -q 'libxml2.so.2 '; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq libxml2 >/dev/null
+            real="$(ls /usr/lib/x86_64-linux-gnu/libxml2.so.* | grep -v '\.so\.2$' | head -1)"
+            echo "symlink libxml2.so.2 -> $real"
+            sudo ln -sf "$real" /usr/lib/x86_64-linux-gnu/libxml2.so.2
+            sudo ldconfig
+          fi
+          swift --version
       - name: Install Swift Android SDK
         run: ./scripts/ci-install-swift-android.sh
       - name: Unit tests (voetbal-logica)
@@ -60,7 +80,7 @@ jobs:
         continue-on-error: true # de artefact-opslag hapert soms; de release hieronder is de echte uitgang
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: OpenPocketCine-voetbal-debug-apk
+          name: OpenPocketCine-voetbal-debug-apk-${{ matrix.runner }}
           path: Apps/Android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
