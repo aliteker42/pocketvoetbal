@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
+          persist-credentials: true # voor het verzetten van de tag 'latest' 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
@@ -72,10 +72,19 @@ jobs:
         run: |
           set -euo pipefail
           cp Apps/Android/app/build/outputs/apk/debug/app-debug.apk PocketVoetbal.apk
-          gh release delete latest --cleanup-tag -y -R "$GITHUB_REPOSITORY" || true
-          gh release create latest PocketVoetbal.apk -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "PocketVoetbal — nieuwste build" \
-            --notes "Automatisch gebouwd uit commit ${GITHUB_SHA::7}. Download: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/PocketVoetbal.apk"
+          notes="Automatisch gebouwd uit commit ${GITHUB_SHA::7} ($(date -u +%Y-%m-%d\ %H:%M) UTC). Download: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/PocketVoetbal.apk"
+          # GitHub's API hapert soms (403/5xx): een paar keer proberen, en de bestaande release nooit
+          # eerst weggooien — dan blijft de vaste downloadlink altijd werken.
+          retry() { local i; for i in 1 2 3 4 5 6; do "$@" && return 0; echo "poging $i mislukt: $*" >&2; sleep 20; done; return 1; }
+          if gh release view latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            retry gh release upload latest PocketVoetbal.apk -R "$GITHUB_REPOSITORY" --clobber
+            retry gh release edit latest -R "$GITHUB_REPOSITORY" --notes "$notes" --title "PocketVoetbal — nieuwste build"
+            # tag 'latest' mee laten wijzen naar deze commit
+            git push -f origin "HEAD:refs/tags/latest" || true
+          else
+            retry gh release create latest PocketVoetbal.apk -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "PocketVoetbal — nieuwste build" --notes "$notes"
+          fi
       - name: Upload APK
         continue-on-error: true # de artefact-opslag hapert soms; de release hieronder is de echte uitgang
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
