@@ -23,7 +23,7 @@ object FootballSettingsStore {
             gpuDetector = p.getBoolean("gpuDetector", true),
             detectionIntervalMs = p.getInt("detectionIntervalMs", 160),
             ignoreLonePlayer = p.getBoolean("ignoreLonePlayer", true),
-            sweepSearch = p.getBoolean("sweepSearch", true),
+            sweepSearch = p.getBoolean("sweepSearch2", false),
         )
     }
 
@@ -40,7 +40,7 @@ object FootballSettingsStore {
             putBoolean("gpuDetector", s.gpuDetector)
             putInt("detectionIntervalMs", s.detectionIntervalMs)
             putBoolean("ignoreLonePlayer", s.ignoreLonePlayer)
-            putBoolean("sweepSearch", s.sweepSearch)
+            putBoolean("sweepSearch2", s.sweepSearch)
         }
     }
 }

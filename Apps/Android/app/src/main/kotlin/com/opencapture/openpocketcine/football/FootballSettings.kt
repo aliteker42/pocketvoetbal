@@ -49,7 +49,7 @@ data class FootballSettings(
     /** Eén speler zonder bal (de keeper) na een paar seconden loslaten en het spel zoeken. */
     val ignoreLonePlayer: Boolean = true,
     /** Bij "spel kwijt" rustig heen en weer draaien om het spel terug te vinden. */
-    val sweepSearch: Boolean = true,
+    val sweepSearch: Boolean = false,
 ) {
     /** Afgeleide stuurparameters voor sport + positie. */
     val profile: FootballProfile get() = FootballProfile.of(this)
@@ -96,11 +96,11 @@ data class FootballProfile(
                 when (s.sport) {
                     Sport.ZAAL ->
                         FootballProfile(
-                            defaultZoom = 1.0, lostZoom = 1.0, clusterRadius = 0.30,
+                            defaultZoom = minOf(2.0, s.maxZoom), lostZoom = 1.0, clusterRadius = 0.30,
                             retargetDistance = 0.22, retargetHoldSeconds = 1.0, retargetMinIntervalSeconds = 2.5,
                             lostAfterSeconds = 2.5, steerDeadband = 0.07, steerGain = 1.6, steerMax = 0.85,
                             targetY = 0.50, panLimitLeftDeg = 80.0, panLimitRightDeg = 80.0,
-                            zoomOutWhenTallerThan = 0.60, zoomInWhenShorterThan = 0.18,
+                            zoomOutWhenTallerThan = 0.70, zoomInWhenShorterThan = 0.30,
                         )
                     Sport.VELD ->
                         FootballProfile(

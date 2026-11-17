@@ -92,7 +92,7 @@ class FootballLogicTest {
     }
 
     @Test fun lonePlayerIsDroppedAndSearchSweeps() {
-        val director = CameraDirector(veld)
+        val director = CameraDirector(veld.copy(sweepSearch = true))
         director.start(camera(zoom = 3.0), 0.0)
         val keeper = Detection(0.5, 0.5, 0.05, 0.2, 0.9)
         val alone = PlayEstimate(0.5, 0.5, 0.37, keeper, 0.0, 1, false, 0.0, 0.5, 0.0)
