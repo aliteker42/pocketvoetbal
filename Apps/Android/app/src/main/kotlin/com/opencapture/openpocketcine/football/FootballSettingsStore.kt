@@ -22,6 +22,8 @@ object FootballSettingsStore {
             showOverlay = p.getBoolean("showOverlay", true),
             gpuDetector = p.getBoolean("gpuDetector", true),
             detectionIntervalMs = p.getInt("detectionIntervalMs", 160),
+            ignoreLonePlayer = p.getBoolean("ignoreLonePlayer", true),
+            sweepSearch = p.getBoolean("sweepSearch", true),
         )
     }
 
@@ -37,6 +39,8 @@ object FootballSettingsStore {
             putBoolean("showOverlay", s.showOverlay)
             putBoolean("gpuDetector", s.gpuDetector)
             putInt("detectionIntervalMs", s.detectionIntervalMs)
+            putBoolean("ignoreLonePlayer", s.ignoreLonePlayer)
+            putBoolean("sweepSearch", s.sweepSearch)
         }
     }
 }

@@ -46,6 +46,10 @@ data class FootballSettings(
     val gpuDetector: Boolean = true,
     /** Minimale tijd tussen twee detecties (ms). Hoger = soepeler live-beeld, trager reageren. */
     val detectionIntervalMs: Int = 160,
+    /** Eén speler zonder bal (de keeper) na een paar seconden loslaten en het spel zoeken. */
+    val ignoreLonePlayer: Boolean = true,
+    /** Bij "spel kwijt" rustig heen en weer draaien om het spel terug te vinden. */
+    val sweepSearch: Boolean = true,
 ) {
     /** Afgeleide stuurparameters voor sport + positie. */
     val profile: FootballProfile get() = FootballProfile.of(this)

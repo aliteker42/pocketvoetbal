@@ -71,6 +71,14 @@ class CameraDirector(private val settings: FootballSettings) {
     private var commandedZoom: Double? = null
     private var trackRequestedAt = Double.NEGATIVE_INFINITY
 
+    // Eén speler alleen (de keeper) is geen spel: na een paar seconden gaan we zoeken.
+    private var aloneSince: Double? = null
+    // Kwijt-modus: wanneer begonnen, hoe ver al uitgezoomd, en de zoekbeweging.
+    private var lostModeSince: Double? = null
+    private var lostZoomNow: Double? = null
+    /** De gimbalhoek is pas te vertrouwen als we hem hebben zien veranderen. */
+    private var yawTrusted = false
+
     // Leren van de assen (APP_STEER en terug-naar-thuis).
     private val panStick = AxisLearner()
     private val tiltStick = AxisLearner()
@@ -93,6 +101,10 @@ class CameraDirector(private val settings: FootballSettings) {
         lastRetargetAt = Double.NEGATIVE_INFINITY
         trackRequestedAt = Double.NEGATIVE_INFINITY
         zoomedOutForLost = false
+        aloneSince = null
+        lostModeSince = null
+        lostZoomNow = null
+        yawTrusted = false
         lastTickAt = now
         lastYaw = camera.yawDeg
         lastPitch = camera.pitchDeg
@@ -124,7 +136,18 @@ class CameraDirector(private val settings: FootballSettings) {
         lastTickAt = now
         learn(play, camera, dt, now)
 
-        val seen = play.confidence > 0.0
+        // Eén speler zonder bal (meestal de keeper) volgen we maar kort. Daarna telt hij een tijd
+        // niet mee en gaan we het spel zoeken; vinden we niets beters, dan krijgt hij weer een kans.
+        var loneIgnored = false
+        if (settings.ignoreLonePlayer) {
+            val alone = play.confidence > 0.0 && play.playerCount <= 1 && !play.ballSeen
+            if (alone) { if (aloneSince == null) aloneSince = now } else aloneSince = null
+            aloneSince?.let { since ->
+                val t = now - since
+                if (t >= LONE_SECONDS + LONE_SEARCH_SECONDS) aloneSince = now else if (t >= LONE_SECONDS) loneIgnored = true
+            }
+        }
+        val seen = play.confidence > 0.0 && !loneIgnored
         if (seen) {
             if (seenSince == null) seenSince = now
             lostSince = null
@@ -134,12 +157,13 @@ class CameraDirector(private val settings: FootballSettings) {
             if (lostSince == null) lostSince = now
         }
         val lostFor = lostSince?.let { now - it } ?: 0.0
-        val lost = !seen && lostFor >= profile.lostAfterSeconds
+        val lost = !seen && (loneIgnored || lostFor >= profile.lostAfterSeconds)
 
         when {
             lost -> handleLost(camera, now, actions)
             seen -> {
                 mode = DirectorMode.FOLLOWING
+                lostModeSince = null
                 restoreZoomAfterLost(camera, now, actions)
                 when (settings.steering) {
                     Steering.CAMERA_TRACK -> followByTracking(play, camera, now, actions)
@@ -245,6 +269,7 @@ class CameraDirector(private val settings: FootballSettings) {
         val yaw = camera.yawDeg
         val pitch = camera.pitchDeg
         val steady = stickSince?.let { now - it >= STEADY_STICK_SECONDS } == true
+        homeYaw?.let { h -> if (yaw != null && abs(wrapDeg(yaw - h)) > 2.0) yawTrusted = true }
         if (yaw != null && lastYaw != null) {
             val dYaw = wrapDeg(yaw - lastYaw!!)
             if (lastStickX != 0.0) panStick.observe(lastStickX, dYaw, dt, steady)
@@ -263,21 +288,46 @@ class CameraDirector(private val settings: FootballSettings) {
     // ---- Kwijt --------------------------------------------------------------------------------
 
     private fun handleLost(camera: CameraObservation, now: Double, actions: MutableList<DirectorAction>) {
+        if (mode != DirectorMode.LOST || lostModeSince == null) lostModeSince = now
         mode = DirectorMode.LOST
+        val lostFor = now - lostModeSince!!
         if (camera.isTracking) actions += DirectorAction.CancelTrack
-        if (!zoomedOutForLost) {
-            val target = nearestStop(profile.lostZoom, allowedStops(camera.zoomStops))
-            val ours = commandedZoom ?: camera.zoom
-            if (target < ours - 0.05) {
-                actions += DirectorAction.Zoom(target)
-                lastZoomAt = now
-                zoomedOutForLost = true
-            }
+
+        // Uitzoomen in twee stappen: eerst naar de kwijt-zoom van het profiel, en als dat na een
+        // paar seconden niets oplevert helemaal naar de wijdste stand.
+        val stops = allowedStops(camera.zoomStops)
+        val ours = lostZoomNow ?: commandedZoom ?: camera.zoom
+        val widest = stops.minOrNull() ?: 1.0
+        val target = if (lostFor >= WIDEST_AFTER_SECONDS) widest else nearestStop(profile.lostZoom, stops)
+        if (target < ours - 0.05) {
+            actions += DirectorAction.Zoom(target)
+            lastZoomAt = now
+            lostZoomNow = target
+            zoomedOutForLost = true
         }
-        // Rustig terug naar de startrichting (midden van het veld).
+
         val yaw = camera.yawDeg
         val home = homeYaw
-        if (yaw != null && home != null) {
+        val sweepT = lostFor - SWEEP_AFTER_SECONDS
+        if (settings.sweepSearch && sweepT >= 0 && sweepT < SWEEP_MAX_SECONDS) {
+            // Zoeken: rustig heen en weer draaien rond de startrichting (driehoeksgolf).
+            val phase = ((sweepT + SWEEP_HALF_SECONDS) / (2 * SWEEP_HALF_SECONDS)).toInt()
+            val inPhase = (sweepT + SWEEP_HALF_SECONDS) - phase * 2 * SWEEP_HALF_SECONDS // 0..2T
+            val tri = (inPhase / SWEEP_HALF_SECONDS - 1.0) * (if (phase % 2 == 0) 1.0 else -1.0) // -1..1
+            if (yawTrusted && yaw != null && home != null) {
+                val amplitude = minOf(profile.panLimitLeftDeg, profile.panLimitRightDeg, 75.0) * 0.6
+                val rel = wrapDeg(yaw - home)
+                val rate = ((tri * amplitude - rel) * 1.0).coerceIn(-SWEEP_RATE_DEG, SWEEP_RATE_DEG)
+                holdStick(panStick.stickFor(rate), 0.0, now, actions)
+            } else {
+                // Hoek onbekend: op tijd sturen, zacht, even lang heen als terug.
+                val dir = if (phase % 2 == 0) 1.0 else -1.0
+                holdStick(dir * SWEEP_STICK, 0.0, now, actions)
+            }
+            return
+        }
+        // Niet (meer) zoeken: rustig terug naar de startrichting (midden van het veld).
+        if (yawTrusted && yaw != null && home != null) {
             val delta = wrapDeg(home - yaw)
             if (abs(delta) > HOME_TOLERANCE_DEG) {
                 val rate = (delta * 0.8).coerceIn(-HOME_MAX_RATE, HOME_MAX_RATE)
@@ -293,6 +343,7 @@ class CameraDirector(private val settings: FootballSettings) {
         val seenFor = seenSince?.let { now - it } ?: 0.0
         if (seenFor < 1.0) return
         zoomedOutForLost = false
+        lostZoomNow = null
         val target = commandedZoom ?: nearestStop(profile.defaultZoom, allowedStops(camera.zoomStops))
         actions += DirectorAction.Zoom(target)
         lastZoomAt = now
@@ -373,6 +424,15 @@ class CameraDirector(private val settings: FootballSettings) {
         const val ZOOM_IN_FIT = 0.70
         const val WIDE_EXTENT = 0.85
         const val CENTERED_BAND = 0.15
+        const val LONE_SECONDS = 4.0
+        const val LONE_SEARCH_SECONDS = 12.0
+        const val WIDEST_AFTER_SECONDS = 3.0
+        const val SWEEP_AFTER_SECONDS = 2.5
+        const val SWEEP_HALF_SECONDS = 2.5
+        /** Vier volle slagen; eindigt weer in het midden. */
+        const val SWEEP_MAX_SECONDS = 20.0
+        const val SWEEP_RATE_DEG = 18.0
+        const val SWEEP_STICK = 0.2
         const val HOME_TOLERANCE_DEG = 8.0
         /** Zo lang rijdt de gimbal door op de laatste stick als de detectie even niets geeft. */
         const val COAST_SECONDS = 1.0

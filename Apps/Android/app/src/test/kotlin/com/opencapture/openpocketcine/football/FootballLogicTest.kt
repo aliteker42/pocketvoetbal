@@ -91,6 +91,40 @@ class FootballLogicTest {
         assertTrue(stick.x < 0, "terug naar links richting thuis: ${stick.x}")
     }
 
+    @Test fun lonePlayerIsDroppedAndSearchSweeps() {
+        val director = CameraDirector(veld)
+        director.start(camera(zoom = 3.0), 0.0)
+        val keeper = Detection(0.5, 0.5, 0.05, 0.2, 0.9)
+        val alone = PlayEstimate(0.5, 0.5, 0.37, keeper, 0.0, 1, false, 0.0, 0.5, 0.0)
+        var t = 0.0
+        val all = mutableListOf<DirectorAction>()
+        while (t < CameraDirector.LONE_SECONDS + 4.0) {
+            t += 0.1
+            all += director.tick(alone, camera(zoom = 3.0, tracking = t > 0.3, subjectX = 0.5), t)
+        }
+        assertEquals(DirectorMode.LOST, director.mode)
+        assertTrue(all.any { it == DirectorAction.CancelTrack })
+        assertTrue(all.any { it is DirectorAction.Zoom && it.factor == 1.0 }, "zoomt helemaal uit")
+        assertTrue(all.any { it is DirectorAction.Stick && it.x != 0.0 }, "zoekt door te draaien")
+        // Een groep in beeld: weer volgen en terug naar de eigen zoom.
+        val group = PlayEstimate(0.4, 0.5, 0.8, Detection(0.4, 0.5, 0.03, 0.12, 0.8), 0.05, 5, false, 0.0, 0.4, 0.2)
+        val back = mutableListOf<DirectorAction>()
+        repeat(15) { t += 0.1; back += director.tick(group, camera(zoom = 1.0), t) }
+        assertEquals(DirectorMode.FOLLOWING, director.mode)
+        assertTrue(back.any { it is DirectorAction.Zoom && it.factor == 3.0 })
+        assertTrue(back.any { it is DirectorAction.Track })
+    }
+
+    @Test fun lonePlayerWithBallIsFollowed() {
+        val director = CameraDirector(veld)
+        director.start(camera(zoom = 3.0), 0.0)
+        val p = Detection(0.5, 0.5, 0.05, 0.2, 0.9)
+        val withBall = PlayEstimate(0.5, 0.5, 0.67, p, 0.0, 1, true, 0.0, 0.5, 0.0)
+        var t = 0.0
+        repeat(100) { t += 0.1; director.tick(withBall, camera(zoom = 3.0, tracking = true, subjectX = 0.5), t) }
+        assertEquals(DirectorMode.FOLLOWING, director.mode)
+    }
+
     @Test fun steeringUsesAnglesAndLearnedSign() {
         val director = CameraDirector(veld.copy(steering = Steering.APP_STEER))
         director.start(camera(zoom = 3.0), 0.0)

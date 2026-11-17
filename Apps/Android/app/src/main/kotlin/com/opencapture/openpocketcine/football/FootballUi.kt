@@ -211,6 +211,8 @@ private fun FootballSheet(tracker: FootballTracker, onClose: () -> Unit) {
         Section("Overig") {
             ToggleRow("Opname starten/stoppen met Start/Stop", s.recordWithTracking) { change(s.copy(recordWithTracking = it)) }
             ToggleRow("Herkenning over het beeld tekenen", s.showOverlay) { change(s.copy(showOverlay = it)) }
+            ToggleRow("Eén speler alleen (keeper) niet blijven volgen", s.ignoreLonePlayer) { change(s.copy(ignoreLonePlayer = it)) }
+            ToggleRow("Spel kwijt: zoekend heen en weer draaien", s.sweepSearch) { change(s.copy(sweepSearch = it)) }
             Text("Herkenningstempo (lager = soepeler live-beeld)", style = MaterialTheme.typography.bodyMedium)
             ChipRow(listOf(330, 160, 100), s.detectionIntervalMs, { when (it) { 330 -> "Zuinig 3/s"; 160 -> "Normaal 6/s"; else -> "Snel 10/s" } }) {
                 change(s.copy(detectionIntervalMs = it))

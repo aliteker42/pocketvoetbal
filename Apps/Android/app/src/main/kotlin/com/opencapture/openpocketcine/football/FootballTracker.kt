@@ -114,7 +114,7 @@ class FootballTracker(
             startedRecording = true
         }
         FootballLog.beginSession(context)
-        FootballLog.add("START ${settings.sport} ${settings.position} ${settings.steering} autoZoom=${settings.autoZoom} max=${settings.maxZoom} interval=${settings.detectionIntervalMs}ms gpu=${settings.gpuDetector}")
+        FootballLog.add("START ${settings.sport} ${settings.position} ${settings.steering} autoZoom=${settings.autoZoom} max=${settings.maxZoom} interval=${settings.detectionIntervalMs}ms gpu=${settings.gpuDetector} lone=${settings.ignoreLonePlayer} sweep=${settings.sweepSearch}")
         _state.value =
             FootballState(
                 active = true, mode = dir.mode, detectorLabel = det.delegateLabel, recordingStartedByUs = startedRecording,
