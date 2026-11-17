@@ -21,6 +21,8 @@ data class FootballState(
     val active: Boolean = false,
     val mode: DirectorMode = DirectorMode.IDLE,
     val players: List<Detection> = emptyList(),
+    /** Stilstaande personen (publiek, bank) die niet meetellen; grijs in de overlay. */
+    val ignored: List<Detection> = emptyList(),
     val balls: List<Detection> = emptyList(),
     val playX: Double = 0.5,
     val playY: Double = 0.5,
@@ -60,6 +62,9 @@ class FootballTracker(
     @Volatile private var latestObservation: SceneObservation? = null
     private var lastStick: Pair<Double, Double>? = null
     private var lastStickSentAt = 0L
+    /** Tot wanneer de camera door ons bewogen wordt (draaien/zoomen); dan is stilstaan niet te beoordelen. */
+    @Volatile private var cameraBusyUntil = 0L
+    @Volatile private var cameraTrackingNow = false
     private var lastTickLogAt = 0.0
     private var lastLoggedTracking: Boolean? = null
     private var framesSeen = 0L
@@ -99,7 +104,7 @@ class FootballTracker(
         val det = detector ?: PlayerDetector(context, preferGpu = settings.gpuDetector).also { detector = it }
         det.minIntervalMs = settings.detectionIntervalMs.toLong()
         val profile = settings.profile
-        finder = PlayFinder(profile)
+        finder = PlayFinder(profile, ignoreStanding = settings.ignoreStanding)
         val dir = CameraDirector(settings)
         director = dir
         latestPlay = null
@@ -182,8 +187,10 @@ class FootballTracker(
     private fun onObservation(obs: SceneObservation) {
         val f = finder ?: return
         framesSeen++
-        latestObservation = obs
-        latestPlay = f.update(obs)
+        val now = SystemClock.elapsedRealtime()
+        val seen = obs.copy(cameraMoving = now < cameraBusyUntil, cameraTracking = cameraTrackingNow)
+        latestObservation = seen
+        latestPlay = f.update(seen)
     }
 
     // ---- Regel-tik ----------------------------------------------------------------------------
@@ -202,6 +209,7 @@ class FootballTracker(
         val dir = director ?: return
         val now = nowSeconds()
         val camera = cameraObservation()
+        cameraTrackingNow = camera.isTracking
         val play = latestPlay ?: PlayEstimate(0.5, 0.5, 0.0, null, 0.0, 0, false, 0.0)
         // Een oude schatting (detector stil) telt als "niets gezien".
         // "Oud" hangt af van het detectietempo: bij 3/s is 1,5 s zonder nieuw beeld normaal.
@@ -217,7 +225,7 @@ class FootballTracker(
         if (now - lastTickLogAt >= 1.0) {
             lastTickLogAt = now
             FootballLog.add(
-                "TIK mode=${dir.mode} h=${"%.2f".format(effective.medianHeight)} spelers=${effective.playerCount} bal=${effective.ballSeen} spel=%.2f,%.2f zeker=%.2f oud=%s ".format(
+                "TIK mode=${dir.mode} h=${"%.2f".format(effective.medianHeight)} spelers=${effective.playerCount} stil=${effective.ignored.size} bal=${effective.ballSeen} spel=%.2f,%.2f zeker=%.2f oud=%s ".format(
                     effective.x, effective.y, effective.confidence, stale,
                 ) + "yaw=${camera.yawDeg?.let { "%.0f".format(it) }} zoom=%.1f det=%dms frames=%d stick=%s".format(
                     camera.zoom, detector?.lastLatencyMs ?: 0, framesSeen, lastStick?.let { "%.2f,%.2f".format(it.first, it.second) },
@@ -234,6 +242,7 @@ class FootballTracker(
             _state.value.copy(
                 mode = dir.mode,
                 players = if (stale) emptyList() else obs?.persons.orEmpty(),
+                ignored = if (stale) emptyList() else effective.ignored,
                 balls = if (stale) emptyList() else obs?.balls.orEmpty(),
                 playX = effective.x, playY = effective.y, confidence = effective.confidence,
                 cameraTracking = camera.isTracking,
@@ -295,6 +304,7 @@ class FootballTracker(
                 }
                 is DirectorAction.Zoom -> {
                     s.setZoom(a.factor)
+                    cameraBusyUntil = SystemClock.elapsedRealtime() + 1500
                     note("Zoom ${"%.1f".format(a.factor)}×")
                 }
             }
@@ -303,6 +313,7 @@ class FootballTracker(
 
     private fun sendStick(x: Double, y: Double) {
         lastStickSentAt = SystemClock.elapsedRealtime()
+        cameraBusyUntil = lastStickSentAt + 800
         session.updateGimbalStick(x.toFloat(), y.toFloat(), linear = true)
     }
 

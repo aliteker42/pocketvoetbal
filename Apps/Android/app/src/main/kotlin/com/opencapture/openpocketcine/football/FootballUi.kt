@@ -59,11 +59,12 @@ fun FootballOverlay(tracker: FootballTracker, mirrored: Boolean, modifier: Modif
         val w = size.width
         val h = size.height
         fun fx(x: Double) = (if (mirrored) 1 - x else x).toFloat() * w
+        val ignored = state.ignored.toSet()
         for (p in state.players) {
             val left = fx(p.cx - p.w / 2)
             val right = fx(p.cx + p.w / 2)
             drawRect(
-                PlayerColor,
+                if (p in ignored) Color(0x99BDBDBD) else PlayerColor,
                 topLeft = Offset(minOf(left, right), ((p.cy - p.h / 2) * h).toFloat()),
                 size = Size(kotlin.math.abs(right - left), (p.h * h).toFloat()),
                 style = Stroke(width = 2.dp.toPx()),
@@ -213,6 +214,7 @@ private fun FootballSheet(tracker: FootballTracker, onClose: () -> Unit) {
         Section("Overig") {
             ToggleRow("Opname starten/stoppen met Start/Stop", s.recordWithTracking) { change(s.copy(recordWithTracking = it)) }
             ToggleRow("Herkenning over het beeld tekenen", s.showOverlay) { change(s.copy(showOverlay = it)) }
+            ToggleRow("Stilstaande mensen (publiek, bank) negeren", s.ignoreStanding) { change(s.copy(ignoreStanding = it)) }
             ToggleRow("Eén speler alleen (keeper) niet blijven volgen", s.ignoreLonePlayer) { change(s.copy(ignoreLonePlayer = it)) }
             ToggleRow("Spel kwijt: zoekend heen en weer draaien", s.sweepSearch) { change(s.copy(sweepSearch = it)) }
             Text("Herkenningstempo (lager = soepeler live-beeld)", style = MaterialTheme.typography.bodyMedium)

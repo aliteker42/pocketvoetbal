@@ -52,6 +52,8 @@ data class FootballSettings(
     val ignoreLonePlayer: Boolean = true,
     /** Bij "spel kwijt" rustig heen en weer draaien om het spel terug te vinden. */
     val sweepSearch: Boolean = false,
+    /** Mensen die stilstaan (publiek, bank, wissels) niet meetellen als spel. */
+    val ignoreStanding: Boolean = true,
 ) {
     /** Afgeleide stuurparameters voor sport + positie. */
     val profile: FootballProfile get() = FootballProfile.of(this)

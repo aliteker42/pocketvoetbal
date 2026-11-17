@@ -13,7 +13,7 @@ class FootballLogicTest {
         CameraObservation(tracking, subjectX, if (subjectX != null) 0.5 else null, yaw, 0.0, zoom, listOf(1.0, 2.0, 3.0, 4.0, 6.0))
 
     @Test fun playPointSitsBetweenBallAndCluster() {
-        val finder = PlayFinder(veld.profile)
+        val finder = PlayFinder(veld.profile, ignoreStanding = false)
         val players = (0 until 6).map { Detection(0.30 + it * 0.02, 0.5, 0.03, 0.12, 0.8) }
         val ball = Detection(0.60, 0.5, 0.01, 0.015, 0.5)
         var play = finder.update(SceneObservation(players, listOf(ball), null, 0.0))
@@ -25,6 +25,22 @@ class FootballLogicTest {
         assertEquals(0.40, play.anchor!!.cx, 1e-9) // dichtst bij de bal
     }
 
+    @Test fun standingSpectatorsAreIgnored() {
+        val finder = PlayFinder(veld.profile)
+        var play = finder.update(SceneObservation(emptyList(), emptyList(), null, 0.0))
+        for (i in 0..40) {
+            val t = i * 0.16
+            // Acht toeschouwers rechts, stil (met wat detectieruis); drie spelers links die bewegen.
+            val crowd = (0 until 8).map { Detection(0.75 + it * 0.02 + (if (i % 2 == 0) 0.003 else -0.003), 0.45, 0.03, 0.2, 0.8) }
+            val players = (0 until 3).map { Detection(0.15 + it * 0.08 + 0.06 * kotlin.math.sin(t * 2 + it), 0.5 + 0.08 * kotlin.math.cos(t * 3 + it), 0.03, 0.15, 0.8) }
+            play = finder.update(SceneObservation(crowd + players, emptyList(), null, t))
+        }
+        assertEquals(8, play.ignored.size)
+        assertEquals(3, play.playerCount)
+        assertTrue(play.x < 0.4, "spelpunt ${play.x} hoort bij de spelers, niet bij het publiek")
+        assertTrue(play.anchor!!.cx < 0.4)
+    }
+
     @Test fun nothingSeenMeansNoConfidence() {
         val finder = PlayFinder(veld.profile)
         val play = finder.update(SceneObservation(emptyList(), emptyList(), null, 0.0))
@@ -33,7 +49,7 @@ class FootballLogicTest {
     }
 
     @Test fun lonelyKeeperDoesNotPullThePlay() {
-        val finder = PlayFinder(veld.profile)
+        val finder = PlayFinder(veld.profile, ignoreStanding = false)
         val cluster = (0 until 8).map { Detection(0.70 + (it % 4) * 0.02, 0.5 + (it / 4) * 0.05, 0.03, 0.12, 0.8) }
         val keeper = Detection(0.05, 0.5, 0.03, 0.12, 0.9)
         var play = finder.update(SceneObservation(cluster + keeper, emptyList(), null, 0.0))

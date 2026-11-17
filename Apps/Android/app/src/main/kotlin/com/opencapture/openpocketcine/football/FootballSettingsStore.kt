@@ -24,6 +24,7 @@ object FootballSettingsStore {
             detectionIntervalMs = p.getInt("detectionIntervalMs", 160),
             ignoreLonePlayer = p.getBoolean("ignoreLonePlayer", true),
             sweepSearch = p.getBoolean("sweepSearch2", false),
+            ignoreStanding = p.getBoolean("ignoreStanding", true),
         )
     }
 
@@ -41,6 +42,7 @@ object FootballSettingsStore {
             putInt("detectionIntervalMs", s.detectionIntervalMs)
             putBoolean("ignoreLonePlayer", s.ignoreLonePlayer)
             putBoolean("sweepSearch2", s.sweepSearch)
+            putBoolean("ignoreStanding", s.ignoreStanding)
         }
     }
 }
