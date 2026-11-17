@@ -37,6 +37,8 @@ data class PlayEstimate(
     val meanPlayerX: Double? = null,
     /** Breedte die alle spelers samen innemen (max x − min x), 0..1. */
     val extentX: Double = 0.0,
+    /** Mediaan van de spelershoogte in beeld (0..1): maat voor hoe ver weg het spel is. */
+    val medianHeight: Double = 0.0,
 )
 
 /**
@@ -98,6 +100,8 @@ class PlayFinder(private val profile: FootballProfile) {
                 w += exp(-d * d)
             }
             // Dichter bij de bal = belangrijker.
+            // Achter de goal: een speler vlak voor de camera (groot in beeld) mag de richting niet bepalen.
+            if (profile.behindGoal) w /= 1.0 + (p.h / 0.35) * (p.h / 0.35) * 3.0
             if (ballValid) w *= 1.0 + 2.0 * exp(-(p.distanceTo(ballX, ballY) / profile.clusterRadius).let { it * it })
             weights[i] = w
             cx += p.cx * w
@@ -179,6 +183,7 @@ class PlayFinder(private val profile: FootballProfile) {
             x = px.coerceIn(0.0, 1.0), y = py.coerceIn(0.0, 1.0), confidence = confidence, anchor = anchor,
             spreadX = spread, playerCount = persons.size, ballSeen = ballValid, edgePressure = edge,
             meanPlayerX = meanX, extentX = extent,
+            medianHeight = if (persons.isEmpty()) 0.0 else persons.map { it.h }.sorted()[persons.size / 2],
         )
     }
 

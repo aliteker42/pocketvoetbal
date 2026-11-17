@@ -217,7 +217,7 @@ class FootballTracker(
         if (now - lastTickLogAt >= 1.0) {
             lastTickLogAt = now
             FootballLog.add(
-                "TIK mode=${dir.mode} spelers=${effective.playerCount} bal=${effective.ballSeen} spel=%.2f,%.2f zeker=%.2f oud=%s ".format(
+                "TIK mode=${dir.mode} h=${"%.2f".format(effective.medianHeight)} spelers=${effective.playerCount} bal=${effective.ballSeen} spel=%.2f,%.2f zeker=%.2f oud=%s ".format(
                     effective.x, effective.y, effective.confidence, stale,
                 ) + "yaw=${camera.yawDeg?.let { "%.0f".format(it) }} zoom=%.1f det=%dms frames=%d stick=%s".format(
                     camera.zoom, detector?.lastLatencyMs ?: 0, framesSeen, lastStick?.let { "%.2f,%.2f".format(it.first, it.second) },

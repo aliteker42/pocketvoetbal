@@ -186,7 +186,9 @@ private fun FootballSheet(tracker: FootballTracker, onClose: () -> Unit) {
         }
 
         Section("Sport") {
-            ChipRow(Sport.values().toList(), s.sport, { it.label }) { change(s.copy(sport = it)) }
+            ChipRow(Sport.values().toList(), s.sport, { it.label }) {
+                change(s.copy(sport = it, position = if (it == Sport.ZAAL) CameraPosition.ACHTER_GOAL else if (s.position == CameraPosition.ACHTER_GOAL) CameraPosition.MIDDENLIJN else s.position))
+            }
         }
         Section("Positie camera") {
             ChipRow(CameraPosition.values().toList(), s.position, { it.label }) { change(s.copy(position = it)) }

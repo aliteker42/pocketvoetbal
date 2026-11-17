@@ -165,18 +165,22 @@ class CameraDirector(private val settings: FootballSettings) {
                 mode = DirectorMode.FOLLOWING
                 lostModeSince = null
                 restoreZoomAfterLost(camera, now, actions)
-                when (settings.steering) {
-                    Steering.CAMERA_TRACK -> followByTracking(play, camera, now, actions)
-                    Steering.APP_STEER -> followBySteering(play, camera, now, actions)
+                if (profile.behindGoal) {
+                    followBehindGoal(play, camera, now, actions)
+                } else {
+                    when (settings.steering) {
+                        Steering.CAMERA_TRACK -> followByTracking(play, camera, now, actions)
+                        Steering.APP_STEER -> followBySteering(play, camera, now, actions)
+                    }
+                    if (settings.autoZoom) autoZoom(play, camera, now, actions)
                 }
-                if (settings.autoZoom) autoZoom(play, camera, now, actions)
             }
             else -> {
                 // Even niets gezien (een gemiste detectie, een traag beeld): niets overhaasten. Bij
                 // APP_STEER de huidige beweging nog even door laten lopen; pas na een korte tijd
                 // de stick loslaten. Anders wordt elke hik in de detectie een hik in de gimbal.
                 if (mode != DirectorMode.LOST) mode = DirectorMode.SEARCHING
-                if (settings.steering == Steering.APP_STEER && lostFor >= COAST_SECONDS) releaseStick(actions)
+                if ((settings.steering == Steering.APP_STEER || profile.behindGoal) && lostFor >= COAST_SECONDS) releaseStick(actions)
             }
         }
         return actions
@@ -236,6 +240,46 @@ class CameraDirector(private val settings: FootballSettings) {
         val w = max(anchor.w * 1.3, MIN_TRACK_SIDE)
         val h = max(anchor.h * 1.1, MIN_TRACK_SIDE)
         return DirectorAction.Track(anchor.cx.coerceIn(w / 2, 1 - w / 2), anchor.cy.coerceIn(h / 2, 1 - h / 2), w, h)
+    }
+
+    // ---- Achter de goal -----------------------------------------------------------------------
+
+    /**
+     * Het spel loopt van de camera af. Zoom volgt de afstand (spelers klein ⇒ inzoomen, groot ⇒
+     * uitzoomen); draaien alleen als het spel duidelijk uit het midden staat, en dan traag.
+     */
+    private fun followBehindGoal(play: PlayEstimate, camera: CameraObservation, now: Double, actions: MutableList<DirectorAction>) {
+        if (camera.isTracking) actions += DirectorAction.CancelTrack
+
+        // Zoom in stappen, met rust ertussen.
+        if (now - lastZoomAt >= BG_ZOOM_INTERVAL_SECONDS && play.playerCount >= 1) {
+            val stops = allowedStops(camera.zoomStops)
+            val current = nearestStop(commandedZoom ?: camera.zoom, stops)
+            val idx = stops.indexOf(current)
+            val h = play.medianHeight
+            val target =
+                when {
+                    (h > BG_ZOOM_OUT_HEIGHT || play.extentX > 0.9 || abs(play.edgePressure) > 0.6) && idx > 0 -> stops[idx - 1]
+                    h in 0.01..BG_ZOOM_IN_HEIGHT && idx < stops.size - 1 && abs(play.x - 0.5) < 0.3 &&
+                        play.extentX * (stops[idx + 1] / current) < 0.85 -> stops[idx + 1]
+                    else -> null
+                }
+            if (target != null && abs(target - current) > 0.05) {
+                commandedZoom = target
+                actions += DirectorAction.Zoom(target)
+                lastZoomAt = now
+            }
+        }
+
+        // Draaien: ruime dode zone, lage snelheid, binnen de pan-grens.
+        val ex = play.x - 0.5
+        var yawRate = if (abs(ex) > BG_PAN_DEADBAND) BG_PAN_KP * (ex - sign(ex) * BG_PAN_DEADBAND) * horizontalFovDeg(camera.zoom) * imageYaw.sign else 0.0
+        val maxRate = BG_PAN_MAX_STICK * panStick.degPerSecondAtFullStick
+        yawRate = yawRate.coerceIn(-maxRate, maxRate)
+        val over = panOverLimit(camera.yawDeg)
+        if (over != 0.0 && sign(yawRate) == sign(over)) yawRate = 0.0
+        val stickX = panStick.stickFor(yawRate)
+        if (stickX == 0.0) releaseStick(actions) else holdStick(stickX, 0.0, now, actions)
     }
 
     // ---- APP_STEER ----------------------------------------------------------------------------
@@ -309,7 +353,7 @@ class CameraDirector(private val settings: FootballSettings) {
         val yaw = camera.yawDeg
         val home = homeYaw
         val sweepT = lostFor - SWEEP_AFTER_SECONDS
-        if (settings.sweepSearch && sweepT >= 0 && sweepT < SWEEP_MAX_SECONDS) {
+        if (settings.sweepSearch && !profile.behindGoal && sweepT >= 0 && sweepT < SWEEP_MAX_SECONDS) {
             // Zoeken: rustig heen en weer draaien rond de startrichting (driehoeksgolf).
             val phase = ((sweepT + SWEEP_HALF_SECONDS) / (2 * SWEEP_HALF_SECONDS)).toInt()
             val inPhase = (sweepT + SWEEP_HALF_SECONDS) - phase * 2 * SWEEP_HALF_SECONDS // 0..2T
@@ -424,6 +468,12 @@ class CameraDirector(private val settings: FootballSettings) {
         const val ZOOM_IN_FIT = 0.70
         const val WIDE_EXTENT = 0.85
         const val CENTERED_BAND = 0.15
+        const val BG_ZOOM_INTERVAL_SECONDS = 3.0
+        const val BG_ZOOM_IN_HEIGHT = 0.22
+        const val BG_ZOOM_OUT_HEIGHT = 0.48
+        const val BG_PAN_DEADBAND = 0.15
+        const val BG_PAN_KP = 0.6
+        const val BG_PAN_MAX_STICK = 0.25
         const val LONE_SECONDS = 4.0
         const val LONE_SEARCH_SECONDS = 12.0
         const val WIDEST_AFTER_SECONDS = 3.0

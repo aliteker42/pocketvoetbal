@@ -9,7 +9,9 @@ enum class Sport(val label: String) {
 /** Waar de camera staat: op de middenlijn (midden van het veld recht vooruit) of ergens langs de zijlijn. */
 enum class CameraPosition(val label: String) {
     MIDDENLIJN("Middenlijn"),
-    ZIJLIJN("Zijlijn (bij hoek / 16)"),
+    ZIJLIJN("Zijlijn"),
+    /** Achter de goal (zaal): het spel loopt van de camera af; zoomen is de hoofdzaak, draaien bijzaak. */
+    ACHTER_GOAL("Achter de goal"),
 }
 
 /** Bij een zijlijn-positie: aan welke kant ligt het midden van het veld, gezien vanaf de camera. */
@@ -89,6 +91,8 @@ data class FootballProfile(
     /** Bij auto-zoom: speler-hoogte (fractie van beeldhoogte) waarboven we uitzoomen / waaronder we inzoomen. */
     val zoomOutWhenTallerThan: Double,
     val zoomInWhenShorterThan: Double,
+    /** Camera achter de goal: volgen in de diepte (zoom op spelersgrootte), weinig en traag draaien. */
+    val behindGoal: Boolean = false,
 ) {
     companion object {
         fun of(s: FootballSettings): FootballProfile {
@@ -113,6 +117,8 @@ data class FootballProfile(
                 }
             return when (s.position) {
                 CameraPosition.MIDDENLIJN -> base
+                CameraPosition.ACHTER_GOAL ->
+                    base.copy(behindGoal = true, panLimitLeftDeg = 30.0, panLimitRightDeg = 30.0, defaultZoom = 1.0, lostZoom = 1.0)
                 // Langs de zijlijn bij een hoek of de 16: het veld ligt grotendeels aan één kant. Naar de
                 // andere kant (achter de goal / het hek) mag de camera maar een klein stukje draaien.
                 CameraPosition.ZIJLIJN ->

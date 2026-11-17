@@ -125,6 +125,24 @@ class FootballLogicTest {
         assertEquals(DirectorMode.FOLLOWING, director.mode)
     }
 
+    @Test fun behindGoalZoomsOnDistanceAndPansLittle() {
+        val s = FootballSettings(sport = Sport.ZAAL, position = CameraPosition.ACHTER_GOAL, maxZoom = 3.0)
+        val director = CameraDirector(s)
+        assertTrue(director.start(camera(zoom = 1.0), 0.0).isEmpty())
+        fun play(x: Double, h: Double) = PlayEstimate(x, 0.5, 0.8, Detection(x, 0.5, h / 3, h, 0.8), 0.05, 4, false, 0.0, x, 0.2, h)
+        var t = 0.0
+        val far = mutableListOf<DirectorAction>()
+        repeat(80) { t += 0.1; far += director.tick(play(0.55, 0.10), camera(zoom = 1.0), t) }
+        assertEquals(listOf(2.0, 3.0), far.filterIsInstance<DirectorAction.Zoom>().map { it.factor })
+        assertTrue(far.none { it is DirectorAction.Stick && it.x != 0.0 }, "kleine afwijking: niet draaien")
+        assertTrue(far.none { it is DirectorAction.Track })
+        val near = mutableListOf<DirectorAction>()
+        repeat(80) { t += 0.1; near += director.tick(play(0.5, 0.6), camera(zoom = 3.0), t) }
+        assertEquals(listOf(2.0, 1.0), near.filterIsInstance<DirectorAction.Zoom>().map { it.factor })
+        val side = director.tick(play(0.9, 0.3), camera(zoom = 1.0), t + 0.1).filterIsInstance<DirectorAction.Stick>().single()
+        assertTrue(side.x > 0 && side.x <= CameraDirector.BG_PAN_MAX_STICK + 1e-9, "stick ${side.x}")
+    }
+
     @Test fun steeringUsesAnglesAndLearnedSign() {
         val director = CameraDirector(veld.copy(steering = Steering.APP_STEER))
         director.start(camera(zoom = 3.0), 0.0)
