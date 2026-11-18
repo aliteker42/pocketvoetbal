@@ -109,14 +109,18 @@ class FootballLogicTest {
 
     @Test fun lonePlayerIsDroppedAndSearchSweeps() {
         val director = CameraDirector(veld.copy(sweepSearch = true))
-        director.start(camera(zoom = 3.0), 0.0)
+        val cam = FakeCam(zoom = 3.0)
+        director.start(cam.obs(), 0.0)
         val keeper = Detection(0.5, 0.5, 0.05, 0.2, 0.9)
         val alone = PlayEstimate(0.5, 0.5, 0.37, keeper, 0.0, 1, false, 0.0, 0.5, 0.0)
         var t = 0.0
         val all = mutableListOf<DirectorAction>()
         while (t < CameraDirector.LONE_SECONDS + 4.0) {
             t += 0.1
-            all += director.tick(alone, camera(zoom = 3.0, tracking = t > 0.3, subjectX = 0.5), t)
+            val tracking = t > 0.3 && all.none { it == DirectorAction.CancelTrack }
+            val acts = director.tick(alone, cam.obs().copy(isTracking = tracking, subjectX = if (tracking) 0.5 else null, subjectY = if (tracking) 0.5 else null), t)
+            all += acts
+            cam.apply(acts, 0.1)
         }
         assertEquals(DirectorMode.LOST, director.mode)
         assertTrue(all.any { it == DirectorAction.CancelTrack })
@@ -125,9 +129,9 @@ class FootballLogicTest {
         // Een groep in beeld: weer volgen en terug naar de eigen zoom.
         val group = PlayEstimate(0.4, 0.5, 0.8, Detection(0.4, 0.5, 0.03, 0.12, 0.8), 0.05, 5, false, 0.0, 0.4, 0.2)
         val back = mutableListOf<DirectorAction>()
-        repeat(15) { t += 0.1; back += director.tick(group, camera(zoom = 1.0), t) }
+        repeat(15) { t += 0.1; director.tick(group, cam.obs(), t).also { back += it; cam.apply(it, 0.1) } }
         assertEquals(DirectorMode.FOLLOWING, director.mode)
-        assertTrue(back.any { it is DirectorAction.Zoom && it.factor == 3.0 })
+        assertTrue(back.none { it is DirectorAction.Zoom && it.factor == 3.0 }, "niet in één klap terug naar 3×")
         assertTrue(back.any { it is DirectorAction.Track })
     }
 
@@ -141,22 +145,97 @@ class FootballLogicTest {
         assertEquals(DirectorMode.FOLLOWING, director.mode)
     }
 
+    /** Nep-camera die de opdrachten van de regelaar uitvoert, zodat zoom en hoek kloppen. */
+    private class FakeCam(var zoom: Double = 1.0, var yaw: Double = 0.0) {
+        var stick = 0.0
+        fun obs() = CameraObservation(false, null, null, yaw, 0.0, zoom, listOf(1.0, 3.0, 6.0))
+        fun apply(actions: List<DirectorAction>, dt: Double) {
+            for (a in actions) when (a) {
+                is DirectorAction.Zoom -> zoom = a.factor
+                is DirectorAction.Stick -> stick = a.x
+                else -> {}
+            }
+            yaw += stick * 90.0 * dt
+        }
+    }
+
     @Test fun behindGoalZoomsOnDistanceAndPansLittle() {
         val s = FootballSettings(sport = Sport.ZAAL, position = CameraPosition.ACHTER_GOAL, maxZoom = 3.0)
         val director = CameraDirector(s)
-        assertTrue(director.start(camera(zoom = 1.0), 0.0).isEmpty())
-        fun play(x: Double, h: Double) = PlayEstimate(x, 0.5, 0.8, Detection(x, 0.5, h / 3, h, 0.8), 0.05, 4, false, 0.0, x, 0.2, h)
+        val cam = FakeCam()
+        assertTrue(director.start(cam.obs(), 0.0).isEmpty())
+        // Spelers "zien" groter worden naarmate de camera inzoomt.
+        fun play(x: Double, baseH: Double) =
+            (baseH * cam.zoom).let { h -> PlayEstimate(x, 0.5, 0.8, Detection(x, 0.5, h / 3, h, 0.8), 0.05, 4, false, 0.0, x, 0.2 * cam.zoom, h) }
         var t = 0.0
         val far = mutableListOf<DirectorAction>()
-        repeat(80) { t += 0.1; far += director.tick(play(0.55, 0.10), camera(zoom = 1.0), t) }
-        assertEquals(listOf(2.0, 3.0), far.filterIsInstance<DirectorAction.Zoom>().map { it.factor })
+        repeat(600) { t += 0.1; director.tick(play(0.55, 0.10), cam.obs(), t).also { far += it; cam.apply(it, 0.1) } }
+        assertEquals(listOf(1.5, 2.0, 2.5, 3.0), far.filterIsInstance<DirectorAction.Zoom>().map { it.factor })
         assertTrue(far.none { it is DirectorAction.Stick && it.x != 0.0 }, "kleine afwijking: niet draaien")
         assertTrue(far.none { it is DirectorAction.Track })
+        // Spel komt dichtbij: stap voor stap uit tot de spelers weer passen.
         val near = mutableListOf<DirectorAction>()
-        repeat(80) { t += 0.1; near += director.tick(play(0.5, 0.6), camera(zoom = 3.0), t) }
-        assertEquals(listOf(2.0, 1.0), near.filterIsInstance<DirectorAction.Zoom>().map { it.factor })
-        val side = director.tick(play(0.9, 0.3), camera(zoom = 1.0), t + 0.1).filterIsInstance<DirectorAction.Stick>().single()
+        repeat(200) { t += 0.1; director.tick(play(0.5, 0.25), cam.obs(), t).also { near += it; cam.apply(it, 0.1) } }
+        assertEquals(listOf(2.5, 2.0, 1.5), near.filterIsInstance<DirectorAction.Zoom>().map { it.factor })
+        val side = director.tick(play(0.9, 0.3), cam.obs(), t + 0.1).filterIsInstance<DirectorAction.Stick>().single()
         assertTrue(side.x > 0 && side.x <= CameraDirector.BG_PAN_MAX_STICK + 1e-9, "stick ${side.x}")
+    }
+
+    @Test fun zoomDoesNotPingPong() {
+        // Nagebootst uit de zaal (18 nov): spelers rond 0,15 hoog op 1×; vroeger 60 zooms in 9 minuten.
+        for (pos in listOf(CameraPosition.ACHTER_GOAL, CameraPosition.MIDDENLIJN)) {
+            val s = FootballSettings(sport = Sport.ZAAL, position = pos, maxZoom = 3.0, autoZoom = true, steering = Steering.APP_STEER)
+            val director = CameraDirector(s)
+            val cam = FakeCam()
+            cam.apply(director.start(cam.obs(), 0.0), 0.1)
+            val rnd = kotlin.random.Random(7)
+            var t = 0.0
+            val zooms = mutableListOf<Pair<Double, Double>>()
+            while (t < 540.0) {
+                t += 0.1
+                val base = 0.15 + 0.05 * kotlin.math.sin(t / 20) + (rnd.nextDouble() - 0.5) * 0.04
+                val h = base * cam.zoom
+                val extent = (0.25 + 0.1 * kotlin.math.sin(t / 13)) * cam.zoom
+                val edge = if (extent > 0.95) 0.8 else 0.0
+                val p = PlayEstimate(0.5 + 0.1 * kotlin.math.sin(t / 7), 0.5, 0.7, Detection(0.5, 0.5, h / 3, h, 0.8), 0.1, 3, false, edge, 0.5, extent, h)
+                val acts = director.tick(p, cam.obs(), t)
+                acts.filterIsInstance<DirectorAction.Zoom>().forEach { zooms += t to it.factor }
+                cam.apply(acts, 0.1)
+            }
+            assertTrue(zooms.size <= 25, "$pos: ${zooms.size} zooms in 9 minuten")
+            for (i in 1 until zooms.size) {
+                val (t0, z0) = zooms[i - 1]
+                val (t1, z1) = zooms[i]
+                val prev = if (i >= 2) zooms[i - 2].second else 1.0
+                val reversal = (z1 - z0) * (z0 - prev) < 0
+                assertTrue(!reversal || t1 - t0 >= 5.0, "$pos: omkeer binnen ${"%.1f".format(t1 - t0)} s bij $t1")
+            }
+            assertTrue(zooms.all { it.second <= 3.0 })
+        }
+    }
+
+    @Test fun handMovementPausesTheApp() {
+        val director = CameraDirector(FootballSettings(sport = Sport.ZAAL, position = CameraPosition.ACHTER_GOAL))
+        val cam = FakeCam()
+        director.start(cam.obs(), 0.0)
+        val play = PlayEstimate(0.5, 0.5, 0.8, Detection(0.5, 0.5, 0.05, 0.15, 0.8), 0.05, 4, false, 0.0, 0.5, 0.2, 0.15)
+        var t = 0.0
+        repeat(30) { t += 0.1; cam.apply(director.tick(play, cam.obs(), t), 0.1) }
+        // Gebruiker draait 20° met de hand.
+        cam.yaw -= 20.0
+        t += 0.1
+        director.tick(play.copy(x = 0.9), cam.obs(), t)
+        assertTrue(director.events.any { it.startsWith("HAND draai") }, director.events.toString())
+        val during = mutableListOf<DirectorAction>()
+        repeat(40) { t += 0.1; during += director.tick(play.copy(x = 0.9), cam.obs(), t) }
+        assertTrue(during.none { it is DirectorAction.Stick && it.x != 0.0 || it is DirectorAction.Zoom }, "app wacht: $during")
+        repeat(20) { t += 0.1; director.tick(play, cam.obs(), t) }
+        assertTrue(director.events.any { it.startsWith("HAND klaar") })
+        // Handzoom wordt overgenomen.
+        director.events.clear()
+        cam.zoom = 2.5
+        repeat(5) { t += 0.1; director.tick(play, cam.obs(), t) }
+        assertTrue(director.events.any { it.startsWith("HAND zoom") })
     }
 
     @Test fun steeringUsesAnglesAndLearnedSign() {

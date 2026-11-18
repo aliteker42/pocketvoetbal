@@ -69,6 +69,16 @@ class CameraDirector(private val settings: FootballSettings) {
     private var zoomedOutForLost = false
     /** De zoom die wíj het laatst gevraagd hebben; de camera meldt soms iets anders en daar reageren we niet op. */
     private var commandedZoom: Double? = null
+    // Zoomregeling: hoe lang een in/uit-wens al aanhoudt.
+    private var wantInSince: Double? = null
+    private var wantOutSince: Double? = null
+    // Hand gaat voor: tot wanneer de app stilhoudt omdat de gebruiker zelf stuurde.
+    private var handUntil = Double.NEGATIVE_INFINITY
+    private var stickReleasedAt = Double.NEGATIVE_INFINITY
+    private var handPanned = false
+    private var handRefYaw: Double? = null
+    /** Gebeurtenissen voor het logboek (bijv. handbediening); de tracker haalt ze op. */
+    val events = ArrayList<String>()
     private var trackRequestedAt = Double.NEGATIVE_INFINITY
 
     // Eén speler alleen (de keeper) is geen spel: na een paar seconden gaan we zoeken.
@@ -109,7 +119,11 @@ class CameraDirector(private val settings: FootballSettings) {
         lastYaw = camera.yawDeg
         lastPitch = camera.pitchDeg
         val actions = mutableListOf<DirectorAction>()
-        val startZoom = nearestStop(profile.defaultZoom, allowedStops(camera.zoomStops))
+        val startZoom = nearestStop(profile.defaultZoom, zoomLadder())
+        wantInSince = null
+        wantOutSince = null
+        handUntil = Double.NEGATIVE_INFINITY
+        handPanned = false
         commandedZoom = startZoom
         if (abs(startZoom - camera.zoom) > 0.05) {
             actions += DirectorAction.Zoom(startZoom)
@@ -135,6 +149,45 @@ class CameraDirector(private val settings: FootballSettings) {
         val dt = lastTickAt?.let { (now - it).coerceIn(0.01, 1.0) } ?: 0.1
         lastTickAt = now
         learn(play, camera, dt, now)
+
+        // ---- Hand gaat voor ----
+        // Draaien terwijl wij geen stick vasthouden (en de camera zelf niemand volgt) is de gebruiker.
+        // We vergelijken met de hoek van het moment dat wij stopten met sturen, zodat ook een
+        // rustige handbeweging (een paar graden per seconde) opvalt.
+        val yaw = camera.yawDeg
+        if (yaw != null && !stickHeld && !camera.isTracking && now - stickReleasedAt > HAND_STICK_GUARD_SECONDS) {
+            val ref = handRefYaw
+            if (ref == null) {
+                handRefYaw = yaw
+            } else if (abs(wrapDeg(yaw - ref)) >= HAND_YAW_DEG) {
+                if (now >= handUntil) events += "HAND draai (%.0f° → %.0f°)".format(ref, yaw)
+                handUntil = now + HAND_PAUSE_SECONDS
+                handPanned = true
+                handRefYaw = yaw
+            }
+        } else {
+            handRefYaw = null
+        }
+        // Zoom die afwijkt van wat wij vroegen (en niet net door ons veranderd) is ook de gebruiker.
+        val ours = commandedZoom
+        if (ours != null && now - lastZoomAt > HAND_ZOOM_GUARD_SECONDS && abs(camera.zoom - ours) > HAND_ZOOM_DELTA) {
+            events += "HAND zoom (%.1f× → %.1f×)".format(ours, camera.zoom)
+            commandedZoom = camera.zoom
+            lastZoomAt = now
+            handUntil = now + HAND_PAUSE_SECONDS
+        }
+        if (now < handUntil) {
+            releaseStick(actions)
+            wantInSince = null
+            wantOutSince = null
+            return actions
+        }
+        if (handPanned) {
+            // Waar de gebruiker hem neerzette is het nieuwe midden.
+            handPanned = false
+            if (yaw != null) homeYaw = yaw
+            events += "HAND klaar, verder vanaf %.0f°".format(yaw ?: 0.0)
+        }
 
         // Eén speler zonder bal (meestal de keeper) volgen we maar kort. Daarna telt hij een tijd
         // niet mee en gaan we het spel zoeken; vinden we niets beters, dan krijgt hij weer een kans.
@@ -251,25 +304,7 @@ class CameraDirector(private val settings: FootballSettings) {
     private fun followBehindGoal(play: PlayEstimate, camera: CameraObservation, now: Double, actions: MutableList<DirectorAction>) {
         if (camera.isTracking) actions += DirectorAction.CancelTrack
 
-        // Zoom in stappen, met rust ertussen.
-        if (now - lastZoomAt >= BG_ZOOM_INTERVAL_SECONDS && play.playerCount >= 1) {
-            val stops = allowedStops(camera.zoomStops)
-            val current = nearestStop(commandedZoom ?: camera.zoom, stops)
-            val idx = stops.indexOf(current)
-            val h = play.medianHeight
-            val target =
-                when {
-                    (h > BG_ZOOM_OUT_HEIGHT || play.extentX > 0.9 || abs(play.edgePressure) > 0.6) && idx > 0 -> stops[idx - 1]
-                    h in 0.01..BG_ZOOM_IN_HEIGHT && idx < stops.size - 1 && abs(play.x - 0.5) < 0.3 &&
-                        play.extentX * (stops[idx + 1] / current) < 0.85 -> stops[idx + 1]
-                    else -> null
-                }
-            if (target != null && abs(target - current) > 0.05) {
-                commandedZoom = target
-                actions += DirectorAction.Zoom(target)
-                lastZoomAt = now
-            }
-        }
+        zoomControl(play, camera, now, actions, outHeight = BG_ZOOM_OUT_HEIGHT)
 
         // Draaien: ruime dode zone, lage snelheid, binnen de pan-grens.
         val ex = play.x - 0.5
@@ -339,7 +374,7 @@ class CameraDirector(private val settings: FootballSettings) {
 
         // Uitzoomen in twee stappen: eerst naar de kwijt-zoom van het profiel, en als dat na een
         // paar seconden niets oplevert helemaal naar de wijdste stand.
-        val stops = allowedStops(camera.zoomStops)
+        val stops = zoomLadder()
         val ours = lostZoomNow ?: commandedZoom ?: camera.zoom
         val widest = stops.minOrNull() ?: 1.0
         val target = if (lostFor >= WIDEST_AFTER_SECONDS) widest else nearestStop(profile.lostZoom, stops)
@@ -347,6 +382,8 @@ class CameraDirector(private val settings: FootballSettings) {
             actions += DirectorAction.Zoom(target)
             lastZoomAt = now
             lostZoomNow = target
+            // Na het terugvinden niet in één klap terug inzoomen: de zoomregeling bouwt weer op.
+            commandedZoom = target
             zoomedOutForLost = true
         }
 
@@ -383,43 +420,58 @@ class CameraDirector(private val settings: FootballSettings) {
     }
 
     private fun restoreZoomAfterLost(camera: CameraObservation, now: Double, actions: MutableList<DirectorAction>) {
+        // Bewust geen sprong terug: na "kwijt" zoomt de gewone zoomregeling stap voor stap weer in.
         if (!zoomedOutForLost) return
-        val seenFor = seenSince?.let { now - it } ?: 0.0
-        if (seenFor < 1.0) return
         zoomedOutForLost = false
         lostZoomNow = null
-        val target = commandedZoom ?: nearestStop(profile.defaultZoom, allowedStops(camera.zoomStops))
-        actions += DirectorAction.Zoom(target)
-        lastZoomAt = now
     }
 
     // ---- Zoom ---------------------------------------------------------------------------------
 
     private fun autoZoom(play: PlayEstimate, camera: CameraObservation, now: Double, actions: MutableList<DirectorAction>) {
-        val centered = abs(play.x - 0.5) < CENTERED_BAND
-        if (centered) { if (centeredSince == null) centeredSince = now } else centeredSince = null
-        if (now - lastZoomAt < ZOOM_MIN_INTERVAL_SECONDS) return
-        val stops = allowedStops(camera.zoomStops)
-        val current = nearestStop(commandedZoom ?: camera.zoom, stops)
-        val idx = stops.indexOf(current)
-        val tall = play.anchor?.h ?: 0.0
+        zoomControl(play, camera, now, actions, outHeight = profile.zoomOutWhenTallerThan)
+    }
+
+    /**
+     * Zoom zonder pingpong. Kleine stappen (0,5×), en een stap inzoomen mag alleen als de spelers
+     * ná die stap nog ruim onder de uitzoomgrens blijven. Zo kan een inzoomstap nooit meteen de
+     * uitzoomregel raken. Elke wens moet een tijd aanhouden, en na een zoom is er rust.
+     */
+    private fun zoomControl(play: PlayEstimate, camera: CameraObservation, now: Double, actions: MutableList<DirectorAction>, outHeight: Double) {
+        if (now - lastZoomAt < ZOOM_SETTLE_SECONDS) { wantInSince = null; wantOutSince = null; return }
+        val ladder = zoomLadder()
+        val current = nearestStop(commandedZoom ?: camera.zoom, ladder)
+        val idx = ladder.indexOf(current)
+        val h = if (profile.behindGoal) play.medianHeight else (play.anchor?.h ?: play.medianHeight)
+
+        val wantOut = idx > 0 && (h > outHeight || play.extentX > ZOOM_OUT_EXTENT || abs(play.edgePressure) > 0.6)
+        val r = if (idx < ladder.size - 1) ladder[idx + 1] / current else 1.0
+        val wantIn = !wantOut && idx < ladder.size - 1 && play.playerCount >= 2 &&
+            h in 0.01..(outHeight * ZOOM_IN_MARGIN / r) && play.extentX * r < ZOOM_IN_FIT && abs(play.x - 0.5) < 0.25
+
+        if (wantOut) { if (wantOutSince == null) wantOutSince = now } else wantOutSince = null
+        if (wantIn) { if (wantInSince == null) wantInSince = now } else wantInSince = null
+
         val target =
             when {
-                // Uitzoomen: speler te groot, spelers over de hele breedte, of het spel hangt aan een rand.
-                (tall > profile.zoomOutWhenTallerThan || play.extentX > WIDE_EXTENT || abs(play.edgePressure) > 0.6) && idx > 0 ->
-                    stops[idx - 1]
-                // Inzoomen: pas als het spel een paar seconden rustig in het midden staat en na de zoom
-                // alle spelers nog ruim in beeld passen.
-                idx < stops.size - 1 && tall in 0.01..profile.zoomInWhenShorterThan && play.playerCount >= 2 &&
-                    (centeredSince?.let { now - it } ?: 0.0) >= ZOOM_IN_STABLE_SECONDS &&
-                    play.extentX * (stops[idx + 1] / current) < ZOOM_IN_FIT -> stops[idx + 1]
+                wantOutSince?.let { now - it >= ZOOM_OUT_HOLD_SECONDS } == true -> ladder[idx - 1]
+                wantInSince?.let { now - it >= ZOOM_IN_HOLD_SECONDS } == true && now - lastZoomAt >= ZOOM_IN_DWELL_SECONDS -> ladder[idx + 1]
                 else -> return
             }
-        if (abs(target - current) < 0.05) return
         commandedZoom = target
         actions += DirectorAction.Zoom(target)
         lastZoomAt = now
+        wantInSince = null
+        wantOutSince = null
         centeredSince = null
+    }
+
+    /** 1×, 1,5×, 2×, ... tot de ingestelde maximale zoom. */
+    private fun zoomLadder(): List<Double> {
+        val out = ArrayList<Double>()
+        var z = 1.0
+        while (z <= settings.maxZoom + 0.01) { out += z; z += ZOOM_STEP }
+        return out
     }
 
     private fun allowedStops(stops: List<Double>): List<Double> =
@@ -453,6 +505,7 @@ class CameraDirector(private val settings: FootballSettings) {
     private fun releaseStick(actions: MutableList<DirectorAction>) {
         if (!stickHeld) return
         stickHeld = false
+        stickReleasedAt = lastTickAt ?: 0.0
         stickSince = null
         lastStickX = 0.0
         lastStickY = 0.0
@@ -468,12 +521,24 @@ class CameraDirector(private val settings: FootballSettings) {
         const val ZOOM_IN_FIT = 0.70
         const val WIDE_EXTENT = 0.85
         const val CENTERED_BAND = 0.15
-        const val BG_ZOOM_INTERVAL_SECONDS = 3.0
         const val BG_ZOOM_IN_HEIGHT = 0.22
         const val BG_ZOOM_OUT_HEIGHT = 0.48
         const val BG_PAN_DEADBAND = 0.15
         const val BG_PAN_KP = 0.6
         const val BG_PAN_MAX_STICK = 0.25
+        const val ZOOM_STEP = 0.5
+        const val ZOOM_SETTLE_SECONDS = 2.0
+        const val ZOOM_OUT_HOLD_SECONDS = 1.5
+        const val ZOOM_IN_HOLD_SECONDS = 4.0
+        const val ZOOM_IN_DWELL_SECONDS = 8.0
+        /** Na een inzoomstap moeten de spelers onder deze fractie van de uitzoomgrens blijven. */
+        const val ZOOM_IN_MARGIN = 0.7
+        const val ZOOM_OUT_EXTENT = 0.85
+        const val HAND_YAW_DEG = 4.0
+        const val HAND_STICK_GUARD_SECONDS = 1.0
+        const val HAND_PAUSE_SECONDS = 5.0
+        const val HAND_ZOOM_GUARD_SECONDS = 3.0
+        const val HAND_ZOOM_DELTA = 0.35
         const val LONE_SECONDS = 4.0
         const val LONE_SEARCH_SECONDS = 12.0
         const val WIDEST_AFTER_SECONDS = 3.0

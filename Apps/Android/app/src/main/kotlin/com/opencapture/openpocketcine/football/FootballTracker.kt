@@ -66,6 +66,7 @@ class FootballTracker(
     @Volatile private var cameraBusyUntil = 0L
     @Volatile private var cameraTrackingNow = false
     private var lastTickLogAt = 0.0
+    private var lastSettingsLogAt = 0.0
     private var lastLoggedTracking: Boolean? = null
     private var framesSeen = 0L
 
@@ -119,7 +120,7 @@ class FootballTracker(
             startedRecording = true
         }
         FootballLog.beginSession(context)
-        FootballLog.add("START ${settings.sport} ${settings.position} ${settings.steering} autoZoom=${settings.autoZoom} max=${settings.maxZoom} interval=${settings.detectionIntervalMs}ms gpu=${settings.gpuDetector} lone=${settings.ignoreLonePlayer} sweep=${settings.sweepSearch}")
+        FootballLog.add(settingsLine("START"))
         _state.value =
             FootballState(
                 active = true, mode = dir.mode, detectorLabel = det.delegateLabel, recordingStartedByUs = startedRecording,
@@ -217,7 +218,15 @@ class FootballTracker(
         val stale = latestObservation?.let { now - it.timeSeconds > staleAfter } ?: true
         val effective = if (stale) play.copy(confidence = 0.0, anchor = null, playerCount = 0) else play
         val actions = dir.tick(effective, camera, now)
+        if (dir.events.isNotEmpty()) {
+            dir.events.forEach { FootballLog.add(it) }
+            dir.events.clear()
+        }
         apply(actions)
+        if (now - lastSettingsLogAt >= 60.0) {
+            lastSettingsLogAt = now
+            FootballLog.add(settingsLine("INST"))
+        }
         if (camera.isTracking != lastLoggedTracking) {
             lastLoggedTracking = camera.isTracking
             FootballLog.add("CAMERA tracking=${camera.isTracking} overlay=${session.trackingHud.value.overlay?.let { it::class.simpleName }} subject=${camera.subjectX?.let { "%.2f".format(it) }}")
@@ -303,7 +312,7 @@ class FootballTracker(
                     }
                 }
                 is DirectorAction.Zoom -> {
-                    s.setZoom(a.factor)
+                    s.setZoomSlider(a.factor)
                     cameraBusyUntil = SystemClock.elapsedRealtime() + 1500
                     note("Zoom ${"%.1f".format(a.factor)}×")
                 }
@@ -316,6 +325,8 @@ class FootballTracker(
         cameraBusyUntil = lastStickSentAt + 800
         session.updateGimbalStick(x.toFloat(), y.toFloat(), linear = true)
     }
+
+    private fun settingsLine(prefix: String) = "$prefix ${settings.sport} ${settings.position} ${settings.steering} autoZoom=${settings.autoZoom} max=${settings.maxZoom} interval=${settings.detectionIntervalMs}ms gpu=${settings.gpuDetector} lone=${settings.ignoreLonePlayer} sweep=${settings.sweepSearch}"
 
     private fun note(label: String) {
         _state.value = _state.value.copy(lastActionLabel = label)

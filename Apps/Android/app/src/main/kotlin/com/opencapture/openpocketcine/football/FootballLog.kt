@@ -16,7 +16,7 @@ import java.util.concurrent.Executors
  * te zien is wat er vlak daarvoor gebeurde.
  */
 object FootballLog {
-    private const val MAX = 600
+    private const val MAX = 2500
     private const val FLUSH_MS = 4_000L
     private val lines = ArrayDeque<String>()
     private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.ROOT)
