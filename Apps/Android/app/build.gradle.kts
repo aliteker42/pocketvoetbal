@@ -46,6 +46,12 @@ android {
         testInstrumentationRunnerArguments["notClass"] =
             "com.opencapture.openpocketcine.FeedStressTest"
         buildConfigField("String", "SOURCE_REVISION", "\"unknown\"")
+        // Tweede variant "PocketBediening" (bouwen met -Pbediening=true): alleen handbediening met grote
+        // knoppen, eigen app-id zodat hij naast de voetbal-app op de tablet staat.
+        val bediening = findProperty("bediening")?.toString() == "true"
+        buildConfigField("boolean", "BEDIENING", bediening.toString())
+        manifestPlaceholders["appLabel"] = if (bediening) "PocketBediening" else "@string/app_name"
+        if (bediening) applicationIdSuffix = ".bediening"
 
         ndk {
             abiFilters += supportedAndroidAbi

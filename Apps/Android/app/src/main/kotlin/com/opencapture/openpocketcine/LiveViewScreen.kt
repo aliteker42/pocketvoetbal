@@ -143,10 +143,15 @@ fun LiveViewScreen(model: AppModel) {
             }, modifier = Modifier.fillMaxSize(), picture = {
                 picture()
                 // Voetbal-modus: herkenning over het beeld, in dezelfde 0..1-ruimte als het beeld zelf.
-                com.opencapture.openpocketcine.football.FootballOverlay(model.football, mirrored)
+                if (!BuildConfig.BEDIENING) com.opencapture.openpocketcine.football.FootballOverlay(model.football, mirrored)
             })
-        com.opencapture.openpocketcine.football.FootballControls(
-            model.football, Modifier.align(androidx.compose.ui.Alignment.TopCenter))
+        if (BuildConfig.BEDIENING) {
+            // Bedien-versie: grote knoppen voor draaien en zoomen, onderin.
+            com.opencapture.openpocketcine.football.ManualPad(model)
+        } else {
+            com.opencapture.openpocketcine.football.FootballControls(
+                model.football, Modifier.align(androidx.compose.ui.Alignment.TopCenter))
+        }
         }
     }
 }
