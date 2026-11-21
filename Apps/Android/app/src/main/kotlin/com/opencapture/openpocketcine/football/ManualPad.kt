@@ -1,12 +1,9 @@
 package com.opencapture.openpocketcine.football
 
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,137 +13,97 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opencapture.openpocketcine.AppModel
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-/** Snelheid van draaien en zoomen in de bedien-versie. */
-private enum class PadSpeed(val label: String, val stick: Float, val zoomPerSecond: Double) {
-    TRAAG("Traag", 0.30f, 0.6),
-    NORMAAL("Normaal", 0.60f, 1.2),
-    SNEL("Snel", 1.00f, 2.4),
-}
-
-private class PadPrefs(context: Context) {
-    private val p = context.getSharedPreferences("openpocketcine.bediening", Context.MODE_PRIVATE)
-    var speed: PadSpeed
-        get() = PadSpeed.values().getOrNull(p.getInt("speed", 1)) ?: PadSpeed.NORMAAL
-        set(v) = p.edit().putInt("speed", v.ordinal).apply()
-    var onLeft: Boolean
-        get() = p.getBoolean("onLeft", false)
-        set(v) = p.edit().putBoolean("onLeft", v).apply()
-    var flipX: Boolean
-        get() = p.getBoolean("flipX", false)
-        set(v) = p.edit().putBoolean("flipX", v).apply()
-    var flipY: Boolean
-        get() = p.getBoolean("flipY", false)
-        set(v) = p.edit().putBoolean("flipY", v).apply()
-}
-
 /**
- * Bedien-versie: één paneel met grote knoppen. Ingedrukt houden = blijven draaien/zoomen, loslaten =
- * stoppen. Pijlen sturen de gimbal (zelfde weg als een gamepad), + en − zoomen traploos.
+ * Bedien-versie: links zoom (+/−), rechts pijlen. Ingedrukt houden = rustig bewegen met vaste
+ * snelheid, loslaten = stoppen. Geen versnelling of naijlen, zodat het beeld stabiel blijft.
  */
 @Composable
 fun ManualPad(model: AppModel, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    val prefs = remember { PadPrefs(context) }
-    var speed by remember { mutableStateOf(prefs.speed) }
-    var onLeft by remember { mutableStateOf(prefs.onLeft) }
-    var flipX by remember { mutableStateOf(prefs.flipX) }
-    var flipY by remember { mutableStateOf(prefs.flipY) }
-    var showMenu by remember { mutableStateOf(false) }
-    val zoomNow by model.session.zoomReadout.collectAsState()
     val scope = rememberCoroutineScope()
     val driver = remember { PadDriver(model) }
     DisposableEffect(Unit) { onDispose { driver.stopAll() } }
 
-    Box(
-        modifier.fillMaxSize().navigationBarsPadding().padding(16.dp),
-        contentAlignment = if (onLeft) Alignment.BottomStart else Alignment.BottomEnd,
-    ) {
+    Box(modifier.fillMaxSize().navigationBarsPadding().padding(20.dp)) {
+        // Links: zoom
         Column(
-            Modifier
-                .clip(RoundedCornerShape(28.dp))
-                .background(Color(0x99000000))
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            horizontalAlignment = if (onLeft) Alignment.Start else Alignment.End,
+            Modifier.align(Alignment.CenterStart).panel(),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (showMenu) {
-                PadMenu(
-                    speed, flipX, flipY, onLeft,
-                    onSpeed = { speed = it; prefs.speed = it },
-                    onFlipX = { flipX = it; prefs.flipX = it },
-                    onFlipY = { flipY = it; prefs.flipY = it },
-                    onSide = { onLeft = it; prefs.onLeft = it },
-                )
+            HoldButton("+", 110.dp, ZoomColor, { driver.startZoom(scope, +ZOOM_PER_SECOND) }, { driver.stopZoom() })
+            HoldButton("−", 110.dp, ZoomColor, { driver.startZoom(scope, -ZOOM_PER_SECOND) }, { driver.stopZoom() })
+        }
+        // Rechts: draaien
+        Column(
+            Modifier.align(Alignment.CenterEnd).panel(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            val b = 96.dp
+            HoldButton("▲", b, ArrowColor, { driver.startStick(scope, 0f, TILT_STICK) }, { driver.stopStick() })
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                HoldButton("◀", b, ArrowColor, { driver.startStick(scope, -PAN_STICK, 0f) }, { driver.stopStick() })
+                Spacer(Modifier.size(b))
+                HoldButton("▶", b, ArrowColor, { driver.startStick(scope, PAN_STICK, 0f) }, { driver.stopStick() })
             }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                val pad: @Composable () -> Unit = {
-                    DPad(
-                        onPress = { dx, dy ->
-                            val sx = (if (flipX) -dx else dx) * speed.stick
-                            val sy = (if (flipY) -dy else dy) * speed.stick
-                            driver.startStick(scope, sx, sy)
-                        },
-                        onRelease = { driver.stopStick() },
-                        onCenter = { driver.stopStick(); model.session.recenterGimbal() },
-                    )
-                }
-                val zoom: @Composable () -> Unit = {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        HoldButton("+", size = 92.dp, color = Color(0xFF1565C0),
-                            onPress = { driver.startZoom(scope, +speed.zoomPerSecond) }, onRelease = { driver.stopZoom() })
-                        Text("%.1f×".format(zoomNow), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                        HoldButton("−", size = 92.dp, color = Color(0xFF1565C0),
-                            onPress = { driver.startZoom(scope, -speed.zoomPerSecond) }, onRelease = { driver.stopZoom() })
-                        SmallButton("1×") { driver.stopZoom(); model.session.setZoomSlider(1.0) }
-                    }
-                }
-                if (onLeft) { zoom(); pad() } else { pad(); zoom() }
-            }
-            SmallButton(if (showMenu) "Klaar" else "⚙ ${speed.label}") { showMenu = !showMenu }
+            HoldButton("▼", b, ArrowColor, { driver.startStick(scope, 0f, -TILT_STICK) }, { driver.stopStick() })
         }
     }
 }
 
-/** Houdt de stick/zoom vast zolang een knop ingedrukt is; loslaten zet alles stil. */
+private val ArrowColor = Color(0xFF2E7D32)
+private val ZoomColor = Color(0xFF1565C0)
+
+/** Vaste, rustige stick-uitslag (0..1). */
+private const val PAN_STICK = 0.35f
+private const val TILT_STICK = 0.25f
+/** Zoomsnelheid in "×" per seconde. */
+private const val ZOOM_PER_SECOND = 0.8
+
+private fun Modifier.panel() =
+    clip(RoundedCornerShape(28.dp)).background(Color(0x88000000)).padding(12.dp)
+
+/** Houdt stick/zoom vast zolang een knop ingedrukt is; loslaten zet alles meteen stil. */
 private class PadDriver(private val model: AppModel) {
     private var stickJob: Job? = null
     private var zoomJob: Job? = null
-    private var zoomAnchor = 1.0
     private var zoomCurrent = 1.0
 
-    fun startStick(scope: kotlinx.coroutines.CoroutineScope, x: Float, y: Float) {
+    fun startStick(scope: CoroutineScope, x: Float, y: Float) {
         stickJob?.cancel()
         stickJob = scope.launch {
             while (isActive) {
-                if (model.canDriveGimbalPad()) model.updateGimbalPadStick(x, y)
-                delay(80)
+                // Lineair: precies deze uitslag, zonder het versnellingsfilter van de duimstick.
+                if (model.canDriveGimbalPad()) {
+                    model.session.updateGimbalStick(x, y, assistMirror = model.mirrorsHorizontally, linear = true)
+                }
+                delay(100)
             }
         }
     }
@@ -157,31 +114,31 @@ private class PadDriver(private val model: AppModel) {
         model.endGimbalStick()
     }
 
-    fun startZoom(scope: kotlinx.coroutines.CoroutineScope, perSecond: Double) {
+    fun startZoom(scope: CoroutineScope, perSecond: Double) {
         zoomJob?.cancel()
-        zoomAnchor = model.zoomReadout.coerceAtLeast(1.0)
-        zoomCurrent = zoomAnchor
+        zoomCurrent = model.zoomReadout.coerceAtLeast(1.0)
         zoomJob = scope.launch {
             var last = android.os.SystemClock.elapsedRealtime()
-            // Meteen een klein stapje, zodat een korte tik ook iets doet.
-            zoomCurrent = (zoomCurrent + perSecond * 0.15).coerceIn(1.0, model.zoomMax().coerceAtLeast(1.0))
-            model.updateZoomPinch(zoomCurrent / zoomAnchor)
+            var sent = zoomCurrent
             while (isActive) {
-                delay(50)
+                delay(100)
                 val now = android.os.SystemClock.elapsedRealtime()
-                val dt = (now - last) / 1000.0
+                val dt = ((now - last) / 1000.0).coerceAtMost(0.3)
                 last = now
-                zoomCurrent = (zoomCurrent + perSecond * dt).coerceIn(1.0, model.zoomMax().coerceAtLeast(1.0))
-                model.updateZoomPinch(zoomCurrent / zoomAnchor)
+                val max = model.zoomMax().coerceAtLeast(1.0)
+                zoomCurrent = (zoomCurrent + perSecond * dt).coerceIn(1.0, max)
+                // Alleen versturen als het echt verandert: geen stroom identieke opdrachten.
+                if (kotlin.math.abs(zoomCurrent - sent) >= 0.05) {
+                    model.session.setZoomSlider(zoomCurrent)
+                    sent = zoomCurrent
+                }
             }
         }
     }
 
     fun stopZoom() {
-        if (zoomJob == null) return
         zoomJob?.cancel()
         zoomJob = null
-        model.endZoomPinch()
     }
 
     fun stopAll() {
@@ -191,41 +148,28 @@ private class PadDriver(private val model: AppModel) {
 }
 
 @Composable
-private fun DPad(onPress: (Float, Float) -> Unit, onRelease: () -> Unit, onCenter: () -> Unit) {
-    val b = 84.dp
-    val arrow = Color(0xFF2E7D32)
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        HoldButton("▲", b, arrow, { onPress(0f, 1f) }, onRelease)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            HoldButton("◀", b, arrow, { onPress(-1f, 0f) }, onRelease)
-            Box(
-                Modifier.size(b).clip(RoundedCornerShape(42.dp)).background(Color(0x55FFFFFF)).clickable { onCenter() },
-                contentAlignment = Alignment.Center,
-            ) { Text("Midden", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
-            HoldButton("▶", b, arrow, { onPress(1f, 0f) }, onRelease)
-        }
-        HoldButton("▼", b, arrow, { onPress(0f, -1f) }, onRelease)
-    }
-}
-
-@Composable
 private fun HoldButton(label: String, size: Dp, color: Color, onPress: () -> Unit, onRelease: () -> Unit) {
     var pressed by remember { mutableStateOf(false) }
-    val press by androidx.compose.runtime.rememberUpdatedState(onPress)
-    val release by androidx.compose.runtime.rememberUpdatedState(onRelease)
+    val press by rememberUpdatedState(onPress)
+    val release by rememberUpdatedState(onRelease)
     Box(
         Modifier
             .size(size)
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(22.dp))
             .background(if (pressed) Color.White else color)
-            .border(2.dp, Color(0x66FFFFFF), RoundedCornerShape(20.dp))
+            .border(2.dp, Color(0x66FFFFFF), RoundedCornerShape(22.dp))
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false).consume()
                     pressed = true
                     press()
                     try {
-                        waitForUpOrCancellation()
+                        // Blijf bewegen tot de vinger los is, ook als hij een beetje van de knop schuift.
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { it.consume() }
+                            if (event.changes.none { it.pressed }) break
+                        }
                     } finally {
                         pressed = false
                         release()
@@ -234,50 +178,6 @@ private fun HoldButton(label: String, size: Dp, color: Color, onPress: () -> Uni
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = if (pressed) color else Color.White, fontSize = 38.sp, fontWeight = FontWeight.Bold)
+        Text(label, color = if (pressed) color else Color.White, fontSize = 44.sp, fontWeight = FontWeight.Bold)
     }
-}
-
-@Composable
-private fun SmallButton(label: String, onClick: () -> Unit) {
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color(0x55FFFFFF))
-            .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-    ) { Text(label, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
-}
-
-@Composable
-private fun PadMenu(
-    speed: PadSpeed, flipX: Boolean, flipY: Boolean, onLeft: Boolean,
-    onSpeed: (PadSpeed) -> Unit, onFlipX: (Boolean) -> Unit, onFlipY: (Boolean) -> Unit, onSide: (Boolean) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Snelheid", color = Color.White, fontSize = 14.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (s in PadSpeed.values()) Choice(s.label, s == speed) { onSpeed(s) }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Choice("Links/rechts omdraaien", flipX) { onFlipX(!flipX) }
-            Choice("Op/neer omdraaien", flipY) { onFlipY(!flipY) }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Choice("Paneel links", onLeft) { onSide(true) }
-            Choice("Paneel rechts", !onLeft) { onSide(false) }
-        }
-        Spacer(Modifier.width(1.dp))
-    }
-}
-
-@Composable
-private fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (selected) Color(0xFF2E7D32) else Color(0x44FFFFFF))
-            .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-    ) { Text(label, color = Color.White, fontSize = 14.sp) }
 }
