@@ -4,11 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,7 +26,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opencapture.openpocketcine.AppModel
@@ -40,9 +38,9 @@ import com.opencapture.opencine.vocabulary.CamFov
 import kotlin.math.max
 
 /**
- * Bedien-versie: links twee grote zoomknoppen. Draaien gaat met de gewone joystick van de app (in deze
- * versie extra groot), dus precies dezelfde, stabiele besturing als in de gewone app. Zoomen gebruikt
- * dezelfde zoomweg als een gamepad in de gewone app.
+ * Bedien-versie: links onder een zoom-joystick (alleen op/neer), op dezelfde hoogte als de gewone
+ * joystick rechts onder. Omhoog schuiven = inzoomen, omlaag = uitzoomen; hoe verder, hoe sneller.
+ * Loslaten = terugveren en stoppen. Zoomen gaat via dezelfde zoomweg als een gamepad in de gewone app.
  */
 @Composable
 fun ManualPad(model: AppModel, modifier: Modifier = Modifier) {
@@ -50,55 +48,50 @@ fun ManualPad(model: AppModel, modifier: Modifier = Modifier) {
     val driver = remember { PadDriver(model) }
     DisposableEffect(Unit) { onDispose { driver.stopZoom() } }
 
-    Box(modifier.fillMaxSize().navigationBarsPadding().padding(20.dp)) {
-        Column(
-            Modifier.align(Alignment.CenterStart).panel(),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            HoldButton("+", 110.dp, ZoomColor, { driver.startZoom(scope, +ZOOM_THROW) }, { driver.stopZoom() })
-            HoldButton("−", 110.dp, ZoomColor, { driver.startZoom(scope, -ZOOM_THROW) }, { driver.stopZoom() })
-        }
+    Box(modifier.fillMaxSize().navigationBarsPadding().padding(start = 24.dp, bottom = 16.dp)) {
+        ZoomStick(
+            Modifier.align(Alignment.BottomStart),
+            onMove = { t -> driver.zoom(scope, t) },
+            onRelease = { driver.stopZoom() },
+        )
     }
 }
 
-private val ZoomColor = Color(0xFF1565C0)
+/** Grootste zoomsnelheid (0..1 van de gamepad-zoom) als de knop helemaal boven/onder staat. */
+private const val ZOOM_MAX_THROW = 0.8
 
-/** Hoe ver de "zoom-stick" ingedrukt wordt (0..1), zoals een half ingedrukte gamepad-zoom. */
-private const val ZOOM_THROW = 0.5
-
-private fun Modifier.panel() =
-    clip(RoundedCornerShape(28.dp)).background(Color(0x88000000)).padding(12.dp)
-
-/** Zoom zolang een knop ingedrukt is: dezelfde pomp als de gamepad-zoom van de gewone app. */
+/** Zoom zolang de zoom-joystick uit het midden staat: dezelfde pomp als de gamepad-zoom. */
 private class PadDriver(private val model: AppModel) {
     private var zoomJob: Job? = null
     private var zoomAnchor = 1.0
     private var zoomCurrent = 1.0
+    @Volatile private var throwY = 0.0
 
-    fun startZoom(scope: CoroutineScope, throwY: Double) {
-        zoomJob?.cancel()
+    fun zoom(scope: CoroutineScope, t: Double) {
+        throwY = t
+        if (zoomJob?.isActive == true) return
         zoomAnchor = model.zoomReadout
         zoomCurrent = zoomAnchor
         zoomJob = scope.launch {
             var last = android.os.SystemClock.elapsedRealtime()
-            apply(throwY, CamFov.ZOOM_STEP_INTERVAL_MS / 1000.0)
+            apply(CamFov.ZOOM_STEP_INTERVAL_MS / 1000.0)
             while (isActive) {
                 delay(CamFov.ZOOM_STEP_INTERVAL_MS)
                 if (!model.canDriveGimbalPad()) break
                 val now = android.os.SystemClock.elapsedRealtime()
-                apply(throwY, (now - last) / 1000.0)
+                apply((now - last) / 1000.0)
                 last = now
             }
         }
     }
 
-    private fun apply(throwY: Double, dt: Double) {
+    private fun apply(dt: Double) {
         if (!model.zoomColorHopPending) zoomCurrent = CamFov.zoomStep(zoomCurrent, throwY, dt, model.zoomMax())
         model.updateZoomPinch(zoomCurrent / max(zoomAnchor, CamFov.MIN_FACTOR))
     }
 
     fun stopZoom() {
+        throwY = 0.0
         if (zoomJob == null) return
         zoomJob?.cancel()
         zoomJob = null
@@ -106,38 +99,57 @@ private class PadDriver(private val model: AppModel) {
     }
 }
 
+/** Verticale joystick: knop omhoog/omlaag slepen, links/rechts doet niets. */
 @Composable
-private fun HoldButton(label: String, size: Dp, color: Color, onPress: () -> Unit, onRelease: () -> Unit) {
+private fun ZoomStick(modifier: Modifier, onMove: (Double) -> Unit, onRelease: () -> Unit) {
+    val height = 230.dp
+    val width = 110.dp
+    val knob = 92.dp
+    var dy by remember { mutableStateOf(0f) }
     var pressed by remember { mutableStateOf(false) }
-    val press by rememberUpdatedState(onPress)
+    val move by rememberUpdatedState(onMove)
     val release by rememberUpdatedState(onRelease)
     Box(
-        Modifier
-            .size(size)
-            .clip(RoundedCornerShape(22.dp))
-            .background(if (pressed) Color.White else color)
-            .border(2.dp, Color(0x66FFFFFF), RoundedCornerShape(22.dp))
+        modifier
+            .size(width, height)
+            .clip(RoundedCornerShape(55.dp))
+            .background(Color(0x55000000))
+            .border(2.dp, Color(0xE6FFFFFF), RoundedCornerShape(55.dp))
             .pointerInput(Unit) {
+                val travel = (size.height - knob.toPx()) / 2f
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false).consume()
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
                     pressed = true
-                    press()
+                    // Waar je de vinger neerzet telt als midden: daarna schuiven = zoomen.
+                    val startY = down.position.y
                     try {
-                        // Blijf bewegen tot de vinger los is, ook als hij een beetje van de knop schuift.
                         while (true) {
                             val event = awaitPointerEvent()
-                            event.changes.forEach { it.consume() }
-                            if (event.changes.none { it.pressed }) break
+                            val c = event.changes.firstOrNull { it.id == down.id } ?: break
+                            c.consume()
+                            if (!c.pressed) break
+                            dy = (c.position.y - startY).coerceIn(-travel, travel)
+                            val n = -dy / travel // omhoog = positief = inzoomen
+                            move(if (kotlin.math.abs(n) < 0.12f) 0.0 else n * ZOOM_MAX_THROW)
                         }
                     } finally {
                         pressed = false
+                        dy = 0f
                         release()
                     }
                 }
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = if (pressed) color else Color.White, fontSize = 44.sp, fontWeight = FontWeight.Bold)
+        Text("+", Modifier.align(Alignment.TopCenter).padding(top = 6.dp), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text("−", Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Box(
+            Modifier
+                .offset { androidx.compose.ui.unit.IntOffset(0, dy.toInt()) }
+                .size(knob)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(if (pressed) Color(0xFF1565C0) else Color(0xCCFFFFFF)),
+        )
     }
 }
-
