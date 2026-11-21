@@ -50,9 +50,14 @@ fun ManualPad(model: AppModel, modifier: Modifier = Modifier) {
     // Alleen handbediening: de camera mag nooit zelf iemand gaan volgen of een programma draaien.
     androidx.compose.runtime.LaunchedEffect(Unit) {
         model.session.cancelProgrammedMove()
+        // Alleen als de camera echt iemand volgt, en dan één keer: geen stroom van stop-opdrachten
+        // die de draaibeweging onderbreken.
+        var wasTracking = false
         while (isActive) {
-            if (model.session.isTrackingActive) model.session.cancelSubjectTracking()
-            delay(400)
+            val tracking = model.session.trackingHud.value.isTracking
+            if (tracking && !wasTracking) model.session.cancelSubjectTracking()
+            wasTracking = tracking
+            delay(500)
         }
     }
 
@@ -68,7 +73,7 @@ fun ManualPad(model: AppModel, modifier: Modifier = Modifier) {
         }
         // Rechts onder: grote joystick, zoals de duimstick maar groter
         BigJoystick(
-            Modifier.align(Alignment.BottomEnd),
+            Modifier.align(Alignment.CenterEnd),
             onMove = { x, y -> driver.setStick(scope, x, y) },
             onRelease = { driver.stopStick() },
         )
@@ -80,6 +85,7 @@ private val ZoomColor = Color(0xFF1565C0)
 /** Maximale stick-uitslag bij joystick helemaal tegen de rand (rustig, voor stabiel beeld). */
 private const val MAX_PAN = 0.6f
 private const val MAX_TILT = 0.4f
+private const val MIN_STICK = 0.12f
 /** Zoomsnelheid in "×" per seconde. */
 private const val ZOOM_PER_SECOND = 0.8
 
@@ -101,12 +107,23 @@ private class PadDriver(private val model: AppModel) {
         stickY = y
         if (stickJob?.isActive == true) return
         stickJob = scope.launch {
+            // Zelfde manier als de voetbal-app: alleen versturen bij een echte verandering, en verder
+            // rustig elke 300 ms herhalen zodat de camera weet dat de stick nog vastgehouden wordt.
+            var sentX = Float.NaN
+            var sentY = Float.NaN
+            var sentAt = 0L
             while (isActive) {
-                // Lineair: precies deze uitslag, zonder het versnellingsfilter van de duimstick.
-                if (model.canDriveGimbalPad()) {
-                    model.session.updateGimbalStick(stickX, stickY, assistMirror = model.mirrorsHorizontally, linear = true)
+                val x0 = stickX
+                val y0 = stickY
+                val now = android.os.SystemClock.elapsedRealtime()
+                val changed = sentX.isNaN() || kotlin.math.abs(x0 - sentX) >= 0.03f || kotlin.math.abs(y0 - sentY) >= 0.03f
+                if ((changed || now - sentAt >= 300) && model.canDriveGimbalPad()) {
+                    model.session.updateGimbalStick(x0, y0, linear = true)
+                    sentX = x0
+                    sentY = y0
+                    sentAt = now
                 }
-                delay(60)
+                delay(50)
             }
         }
     }
@@ -126,9 +143,9 @@ private class PadDriver(private val model: AppModel) {
             var last = android.os.SystemClock.elapsedRealtime()
             var sent = zoomCurrent
             while (isActive) {
-                delay(100)
+                delay(250)
                 val now = android.os.SystemClock.elapsedRealtime()
-                val dt = ((now - last) / 1000.0).coerceAtMost(0.3)
+                val dt = ((now - last) / 1000.0).coerceAtMost(0.5)
                 last = now
                 val max = model.zoomMax().coerceAtLeast(1.0)
                 zoomCurrent = (zoomCurrent + perSecond * dt).coerceIn(1.0, max)
@@ -215,14 +232,17 @@ private fun BigJoystick(modifier: Modifier, onMove: (Float, Float) -> Unit, onRe
                     val nx = d.x / radius
                     val ny = -d.y / radius
                     // Dode zone in het midden en een kromme: rustig bij kleine uitslag.
-                    fun curve(v: Float): Float {
+                    // Buiten de dode zone meteen een vaste minimale snelheid (anders schakelt de camera
+                    // rond zijn eigen dode zone steeds aan/uit = schokken), daarna een rustige kromme.
+                    fun curve(v: Float, max: Float): Float {
                         val a = kotlin.math.abs(v)
-                        if (a < 0.12f) return 0f
-                        val t = (a - 0.12f) / 0.88f
-                        return kotlin.math.sign(v) * t * t
+                        if (a < 0.15f) return 0f
+                        val t = (a - 0.15f) / 0.85f
+                        return kotlin.math.sign(v) * (MIN_STICK + (max - MIN_STICK) * t * t)
                     }
-                    val x = curve(nx) * MAX_PAN
-                    val y = curve(ny) * MAX_TILT
+                    // Vooral horizontaal duwen = alleen draaien, niet ook kantelen (en andersom).
+                    val x = if (kotlin.math.abs(nx) >= kotlin.math.abs(ny) * 0.5f) curve(nx, MAX_PAN) else 0f
+                    val y = if (kotlin.math.abs(ny) >= kotlin.math.abs(nx) * 0.5f) curve(ny, MAX_TILT) else 0f
                     if (x == 0f && y == 0f) release() else move(x, y)
                 }
                 awaitEachGesture {
