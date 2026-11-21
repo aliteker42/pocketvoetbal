@@ -262,10 +262,9 @@ class AppModel(
         OperatorPrefs.virtualJoystickResponseCurve(appContext),
     )
         private set
-    // Bedien-versie: altijd de grootste joystick (in die build extra groot, zie de workflow).
+    // Altijd de grootste joystick (in deze builds extra groot, zie de workflow).
     override var virtualJoystickSize by mutableStateOf(
-        if (BuildConfig.BEDIENING) com.opencapture.monitorui.MonitorJoystickSize.LARGE
-        else OperatorPrefs.virtualJoystickSize(appContext))
+        com.opencapture.monitorui.MonitorJoystickSize.LARGE)
         private set
     val virtualJoystickMapping: CameraCommands.VirtualJoystickMapping
         get() =

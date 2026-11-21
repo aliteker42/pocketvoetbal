@@ -48,7 +48,7 @@ fun ManualPad(model: AppModel, modifier: Modifier = Modifier) {
     val driver = remember { PadDriver(model) }
     DisposableEffect(Unit) { onDispose { driver.stopZoom() } }
 
-    Box(modifier.fillMaxSize().navigationBarsPadding().padding(start = 24.dp, bottom = 16.dp)) {
+    Box(modifier.fillMaxSize().navigationBarsPadding().padding(start = 24.dp, bottom = 150.dp)) {
         ZoomStick(
             Modifier.align(Alignment.BottomStart),
             onMove = { t -> driver.zoom(scope, t) },

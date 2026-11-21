@@ -146,10 +146,9 @@ fun LiveViewScreen(model: AppModel) {
                 // Voetbal-modus: herkenning over het beeld, in dezelfde 0..1-ruimte als het beeld zelf.
                 if (!BuildConfig.BEDIENING) com.opencapture.openpocketcine.football.FootballOverlay(model.football, mirrored)
             })
-        if (BuildConfig.BEDIENING) {
-            // Bedien-versie: grote knoppen voor draaien en zoomen, onderin.
-            com.opencapture.openpocketcine.football.ManualPad(model)
-        } else {
+        // Zoom-joystick linksonder, in beide versies.
+        com.opencapture.openpocketcine.football.ManualPad(model)
+        if (!BuildConfig.BEDIENING) {
             com.opencapture.openpocketcine.football.FootballControls(
                 model.football, Modifier.align(androidx.compose.ui.Alignment.TopCenter))
         }

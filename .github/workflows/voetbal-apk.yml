@@ -65,6 +65,11 @@ jobs:
         env:
           SWIFT_ANDROID_SDK_ID: swift-6.3.3-RELEASE_android
         run: |
+          # De gewone joystick van de app (stand "Large") veel groter maken, in beide versies.
+          # De besturing zelf verandert niet; de uitslag wordt naar verhouding van de cirkel gemeten.
+          f=../../../OpenCine/Android/monitor-ui/src/main/kotlin/com/opencapture/monitorui/MonitorLayoutPolicy.kt
+          grep -q 'LARGE("large", 116f, "Large")' "$f"
+          sed -i 's/LARGE("large", 116f, "Large")/LARGE("large", 230f, "Large")/' "$f"
           ./gradlew :app:assembleDebug
           cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/PocketVoetbal.apk"
       - name: Build bedien-versie (PocketBediening)
@@ -72,11 +77,6 @@ jobs:
         env:
           SWIFT_ANDROID_SDK_ID: swift-6.3.3-RELEASE_android
         run: |
-          # Alleen voor deze versie: de gewone joystick van de app (stand "Large") veel groter maken.
-          # De besturing zelf verandert niet; de uitslag wordt naar verhouding van de cirkel gemeten.
-          f=../../../OpenCine/Android/monitor-ui/src/main/kotlin/com/opencapture/monitorui/MonitorLayoutPolicy.kt
-          grep -q 'LARGE("large", 116f, "Large")' "$f"
-          sed -i 's/LARGE("large", 116f, "Large")/LARGE("large", 230f, "Large")/' "$f"
           ./gradlew :app:assembleDebug -Pbediening=true
           cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/PocketBediening.apk"
       - name: Publiceer als release "latest" (vaste downloadlink)
