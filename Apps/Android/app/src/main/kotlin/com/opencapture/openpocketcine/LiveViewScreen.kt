@@ -121,8 +121,9 @@ fun LiveViewScreen(model: AppModel) {
         val focus = MonitorOperatorFocusObservation(focusPoint, trackingHud, session.supportsTapFocus,
             aeLock != null, model.focusBoxLocked, focusOffCenter)
         val focusActions = MonitorOperatorFocusActions(
-            { x, y -> session.handleFeedTap(x, y); Unit },
-            { box -> session.startTracking(box); Unit }, session::lockAutoExposure,
+            // Bedien-versie: tikken op het beeld start nooit automatisch volgen.
+            { x, y -> if (!BuildConfig.BEDIENING) session.handleFeedTap(x, y); Unit },
+            { box -> if (!BuildConfig.BEDIENING) session.startTracking(box); Unit }, session::lockAutoExposure,
             { session.canLockAutoExposure }, { session.unlockAutoExposure() },
             { model.focusBoxLocked = !model.focusBoxLocked; model.focusBoxLocked },
             model::resetFocusPoint, { session.cancelSubjectTracking() }, session::presentControlNote)
