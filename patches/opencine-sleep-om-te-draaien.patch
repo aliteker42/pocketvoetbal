@@ -1,0 +1,70 @@
+diff --git a/Android/camera-controls/src/main/kotlin/com/opencapture/opencine/cameracontrols/LiveZoomChrome.kt b/Android/camera-controls/src/main/kotlin/com/opencapture/opencine/cameracontrols/LiveZoomChrome.kt
+index bc9365b..d030234 100644
+--- a/Android/camera-controls/src/main/kotlin/com/opencapture/opencine/cameracontrols/LiveZoomChrome.kt
++++ b/Android/camera-controls/src/main/kotlin/com/opencapture/opencine/cameracontrols/LiveZoomChrome.kt
+@@ -147,6 +147,16 @@ fun LiveZoomChip(
+  * so two fingers stay on one MotionEvent stream over the Vulkan SurfaceView.
+  */
+ @OptIn(ExperimentalComposeUiApi::class)
++/**
++ * PocketVoetbal: met één vinger over het beeld slepen = gimbal draaien (als een joystick: verschuiving
++ * vanaf het startpunt is de uitslag). De app zet [onDrag]; null = oud gedrag (veeg = DISP).
++ */
++object LiveFeedDrag {
++    /** (dx, dy, feedBreedte, feedHoogte) in px vanaf het startpunt. */
++    @Volatile var onDrag: ((Float, Float, Float, Float) -> Unit)? = null
++    @Volatile var onDragEnd: (() -> Unit)? = null
++}
++
+ @Composable
+ fun LiveFeedGestureWell(
+     enabled: Boolean,
+@@ -190,6 +200,13 @@ fun LiveFeedGestureWell(
+     val feedH = with(density) { (feed?.height ?: 0f).dp.toPx() }.coerceAtLeast(1f)
+ 
+     val gesture = rememberFeedGestureState()
++    val drag = remember { object { var active = false } }
++    fun endDrag() {
++        if (drag.active) {
++            drag.active = false
++            LiveFeedDrag.onDragEnd?.invoke()
++        }
++    }
+     fun feedNorm(x: Float, y: Float): Offset? {
+         if (feed == null) {
+             return Offset(x, y)
+@@ -254,6 +271,7 @@ fun LiveFeedGestureWell(
+                 val count = event.pointerCount
+                 val action = event.actionMasked
+                 if (pinch.active || count >= 2) {
++                    endDrag()
+                     draft = null
+                     if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                         if (pinch.active && !pinch.ended) {
+@@ -320,6 +338,12 @@ fun LiveFeedGestureWell(
+                             gesture.hold?.cancel()
+                             gesture.hold = null
+                         }
++                        val onDrag = LiveFeedDrag.onDrag
++                        if (onDrag != null && !gesture.armed && !pinch.active && (drag.active || slop > holdSlop)) {
++                            drag.active = true
++                            onDrag(gesture.lastX - gesture.startX, gesture.lastY - gesture.startY,
++                                if (feed == null) 1000f else feedW, if (feed == null) 1000f else feedH)
++                        }
+                         if (gesture.armed) {
+                             draft = feedBox(gesture.startX, gesture.startY, gesture.lastX, gesture.lastY)
+                         }
+@@ -327,6 +351,13 @@ fun LiveFeedGestureWell(
+                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                         gesture.hold?.cancel()
+                         gesture.hold = null
++                        if (drag.active) {
++                            endDrag()
++                            gesture.armed = false
++                            gesture.aeLockHeld = false
++                            draft = null
++                            return@pointerInteropFilter true
++                        }
+                         // The hold already toggled the focus box lock; the release does nothing else.
+                         val kind = if (gesture.focusLockToggled) null else
+                             LiveFeedFocusGesture.classify(

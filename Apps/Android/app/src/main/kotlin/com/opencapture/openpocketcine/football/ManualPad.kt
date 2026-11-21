@@ -46,7 +46,22 @@ import kotlin.math.max
 fun ManualPad(model: AppModel, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     val driver = remember { PadDriver(model) }
-    DisposableEffect(Unit) { onDispose { driver.stopZoom() } }
+    // Met één vinger over het beeld slepen = draaien, precies zoals de joystick (zelfde omrekening en
+    // dezelfde weg naar de camera). Vol uitslag bij ongeveer 40% van de beeldbreedte slepen.
+    DisposableEffect(Unit) {
+        com.opencapture.opencine.cameracontrols.LiveFeedDrag.onDrag = { dx, dy, w, _ ->
+            val stick = 0.6f * w
+            val m = com.opencapture.opencine.vocabulary.CameraCommands.mapGimbalStickTouch(dx, dy, stick, stick * 41f / 101f, true)
+            model.updateGimbalStick(m.commandX, m.commandY)
+        }
+        com.opencapture.opencine.cameracontrols.LiveFeedDrag.onDragEnd = { model.endGimbalStick() }
+        onDispose {
+            com.opencapture.opencine.cameracontrols.LiveFeedDrag.onDrag = null
+            com.opencapture.opencine.cameracontrols.LiveFeedDrag.onDragEnd = null
+            model.endGimbalStick()
+            driver.stopZoom()
+        }
+    }
 
     Box(modifier.fillMaxSize().navigationBarsPadding().padding(start = 24.dp, bottom = 150.dp)) {
         ZoomStick(
